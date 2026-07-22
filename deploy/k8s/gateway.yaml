@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vpn-gateway
+  labels:
+    app.kubernetes.io/name: vpn-gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: vpn-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: vpn-gateway
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Always
+      volumes:
+        - name: config-snapshot
+          secret:
+            secretName: vpn-runtime-config-snapshot
+        - name: runtime
+          emptyDir: {}
+        - name: tun-device
+          hostPath:
+            path: /dev/net/tun
+            type: CharDevice
+      containers:
+        - name: vpn-gateway
+          image: vpn-runtime:latest
+          args:
+            - vpn-runtime-daemon
+            - --protocol
+            - openvpn
+            - --config-root-path
+            - /input/vpn_config
+            - --runtime-root-path
+            - /runtime/vpn
+            - --control-socket-path
+            - /runtime/vpn/control.sock
+            - --state-path
+            - /runtime/vpn/status.json
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                - NET_ADMIN
+                - SETGID
+                - SETUID
+              drop:
+                - ALL
+            runAsGroup: 0
+            runAsUser: 0
+          ports:
+            - name: socks5
+              containerPort: 1080
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+                - vpn-runtime-readiness
+                - --state-path
+                - /runtime/vpn/status.json
+            failureThreshold: 2
+            periodSeconds: 2
+            timeoutSeconds: 1
+          volumeMounts:
+            - name: config-snapshot
+              mountPath: /input/vpn_config
+              readOnly: true
+            - name: runtime
+              mountPath: /runtime
+            - name: tun-device
+              mountPath: /dev/net/tun
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vpn-gateway
+spec:
+  selector:
+    app.kubernetes.io/name: vpn-gateway
+  ports:
+    - name: socks5
+      port: 1080
+      protocol: TCP
+      targetPort: socks5
