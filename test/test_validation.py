@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 import pytest
@@ -122,6 +123,40 @@ def test_validation_classifies_static_rejection_as_deterministic_configuration_f
     assert report.phase is ValidationPhase.STATIC
     assert report.failure_kind == ValidationFailureKind.CONFIGURATION
     assert report.diagnostic == "unsafe OpenVPN directive: plugin"
+    assert not report.clean_shutdown_proven
+
+
+def test_validation_static_report_excludes_invalid_document_credentials(tmp_path: Path) -> None:
+    """Keep raw invalid document values out of the persisted validation diagnostic."""
+
+    config_root_path = tmp_path / "config"
+    config_root_path.mkdir()
+    config_root_path.joinpath("config.json").write_text(
+        json.dumps(
+            {
+                "config_path": "provider.ovpn",
+                "login": "sensitive-login\nline",
+                "password": "sensitive-password",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = asyncio.run(
+        validation_run(
+            config_root_path=config_root_path,
+            https_url="https://validation.example.test/ip",
+            protocol=VpnProtocol.OPENVPN,
+            runtime_root_path=tmp_path / "runtime",
+        )
+    )
+
+    assert report.status is ValidationStatus.FAILED
+    assert report.phase is ValidationPhase.STATIC
+    assert report.failure_kind == ValidationFailureKind.CONFIGURATION
+    assert report.diagnostic.startswith("invalid VPN config document: document:")
+    assert "sensitive-login" not in report.diagnostic
+    assert "sensitive-password" not in report.diagnostic
     assert not report.clean_shutdown_proven
 
 

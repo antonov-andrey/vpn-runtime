@@ -11,7 +11,7 @@ import shutil
 import stat
 from typing import Self
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator
 
 _OPENVPN_DANGEROUS_DIRECTIVE_SET = {
     "askpass",
@@ -170,7 +170,17 @@ class OpenvpnSnapshot(BaseModel):
             document_payload = json.loads(config_root_path.joinpath("config.json").read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError(f"failed to parse VPN config document: {exc}") from exc
-        document = VpnSnapshotDocument.model_validate(document_payload)
+        try:
+            document = VpnSnapshotDocument.model_validate(document_payload)
+        except ValidationError as exc:
+            diagnostic_list = []
+            for error in exc.errors(include_context=False, include_input=False, include_url=False):
+                location = error["loc"]
+                field_name = (
+                    location[0] if location and location[0] in {"config_path", "login", "password"} else "document"
+                )
+                diagnostic_list.append(f"{field_name}:{error['type']}")
+            raise ValueError(f"invalid VPN config document: {'; '.join(diagnostic_list)}") from exc
         config_relative_path = Path(document.config_path)
         config_path = config_root_path / config_relative_path
         if config_relative_path.suffix.lower() not in {".conf", ".ovpn"}:
