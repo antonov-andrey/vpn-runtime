@@ -13,6 +13,10 @@ def test_dockerfile_pins_gluetun_python_and_dante_implementations() -> None:
     assert "python@sha256:6b91e66ab2a880ce9ca5a1b91c70f45963ff71ff68268df056336e1a657d5efd" in dockerfile_text
     assert "gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab" in dockerfile_text
     assert "dante-server=1.4.4-r0" in dockerfile_text
+    assert "dnsmasq=2.91-r1" in dockerfile_text
+    assert "adduser -D -H -s /sbin/nologin -u 1001 -G vpndns vpndns" in dockerfile_text
+    assert "chown root:vpnproxy /runtime" in dockerfile_text
+    assert "chmod 710 /runtime" in dockerfile_text
     assert 'ENTRYPOINT ["/sbin/tini", "--"]' in dockerfile_text
 
 

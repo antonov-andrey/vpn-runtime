@@ -15,6 +15,7 @@ FROM ${GLUETUN_IMAGE}
 RUN apk add --upgrade --no-cache \
         ca-certificates=20260611-r0 \
         dante-server=1.4.4-r0 \
+        dnsmasq=2.91-r1 \
         gdbm=1.24-r0 \
         libbz2=1.0.8-r6 \
         libcrypto3=3.5.7-r0 \
@@ -31,8 +32,11 @@ RUN apk add --upgrade --no-cache \
         zlib=1.3.2-r0 \
     && addgroup -g 1000 vpnproxy \
     && adduser -D -H -s /sbin/nologin -u 1000 -G vpnproxy vpnproxy \
+    && addgroup -g 1001 vpndns \
+    && adduser -D -H -s /sbin/nologin -u 1001 -G vpndns vpndns \
     && mkdir -p /input /runtime \
-    && chmod 700 /runtime
+    && chown root:vpnproxy /runtime \
+    && chmod 710 /runtime
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=python-runtime /opt/vpn-runtime /opt/vpn-runtime

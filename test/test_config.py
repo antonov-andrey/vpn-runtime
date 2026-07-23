@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import traceback
 
 import pytest
 from pydantic import ValidationError
@@ -74,6 +75,43 @@ def test_openvpn_snapshot_materializes_private_attempt_without_mutating_source(t
     assert stat_mode_get(openvpn_attempt.user_path) == 0o600
 
 
+def test_openvpn_snapshot_resolves_hostname_only_in_private_attempt(tmp_path: Path) -> None:
+    """Accept a source hostname and replace it only in a runtime attempt copy."""
+
+    config_root_path = _snapshot_create(
+        tmp_path,
+        config_text="client\nremote vpn.example.test 1194 tcp\n",
+        login="",
+        password="",
+    )
+    snapshot = OpenvpnSnapshot.from_root(config_root_path)
+
+    openvpn_attempt = snapshot.attempt_materialize(
+        tmp_path / "runtime" / "generation_1",
+        {"vpn.example.test": "203.0.113.20"},
+    )
+
+    assert snapshot.remote_hostname_list == ["vpn.example.test"]
+    assert "remote vpn.example.test 1194 tcp" in config_root_path.joinpath("provider.ovpn").read_text(encoding="utf-8")
+    assert "remote 203.0.113.20 1194 tcp" in openvpn_attempt.config_path.read_text(encoding="utf-8")
+
+
+def test_openvpn_snapshot_requires_runtime_resolution_for_hostname_attempt(tmp_path: Path) -> None:
+    """Refuse a provider attempt when one accepted hostname was not resolved."""
+
+    snapshot = OpenvpnSnapshot.from_root(
+        _snapshot_create(
+            tmp_path,
+            config_text="client\nremote vpn.example.test 1194\n",
+            login="",
+            password="",
+        )
+    )
+
+    with pytest.raises(ValueError, match="no runtime-resolved IP address"):
+        snapshot.attempt_materialize(tmp_path / "runtime" / "generation_1")
+
+
 def stat_mode_get(path: Path) -> int:
     """Return only Unix permission bits for one path.
 
@@ -112,6 +150,33 @@ def test_openvpn_snapshot_rejects_invalid_protocol_neutral_document(
         OpenvpnSnapshot.from_root(config_root_path)
 
 
+def test_openvpn_snapshot_document_error_does_not_chain_secret_input(tmp_path: Path) -> None:
+    """Keep rejected raw credentials out of exception chains and tracebacks."""
+
+    config_root_path = _snapshot_create(tmp_path)
+    config_root_path.joinpath("config.json").write_text(
+        json.dumps(
+            {
+                "login": "leaked-login",
+                "openvpn_config_name": "provider.ovpn",
+                "password": "leaked-password",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        OpenvpnSnapshot.from_root(config_root_path)
+    except ValueError as exc:
+        diagnostic = "".join(traceback.format_exception(exc))
+    else:
+        raise AssertionError("invalid document unexpectedly passed")
+
+    assert "leaked-login" not in diagnostic
+    assert "leaked-password" not in diagnostic
+    assert "config_path:missing" in diagnostic
+
+
 @pytest.mark.parametrize(
     "unsafe_directive",
     [
@@ -144,22 +209,43 @@ def test_openvpn_snapshot_rejects_executable_and_external_control_directives(
 @pytest.mark.parametrize(
     "config_text",
     [
-        "client\nremote vpn.example.test 1194\n",
         "client\nremote 203.0.113.10 1194\nca /outside/ca.crt\n",
         "client\nremote 203.0.113.10 1194\nca ../ca.crt\n",
         "client\nremote 203.0.113.10 1194\nauth-user-pass credentials.txt\n",
         "client\nremote 203.0.113.10 1194\n<connection>\nremote 203.0.113.11 1194\n</connection>\n",
     ],
 )
-def test_openvpn_snapshot_rejects_leaky_bootstrap_and_escaping_references(
+def test_openvpn_snapshot_rejects_escaping_references(
     tmp_path: Path,
     config_text: str,
 ) -> None:
-    """Reject DNS bootstrap leaks, escaping paths, credential files, and unsupported blocks."""
+    """Reject escaping paths, external credential files, and unsupported blocks."""
 
     config_root_path = _snapshot_create(tmp_path, config_text=config_text)
 
     with pytest.raises(ValueError):
+        OpenvpnSnapshot.from_root(config_root_path)
+
+
+@pytest.mark.parametrize(
+    "remote_hostname",
+    [
+        "-vpn.example.test",
+        "vpn_.example.test",
+        "vpn..example.test",
+    ],
+)
+def test_openvpn_snapshot_rejects_invalid_remote_hostname(tmp_path: Path, remote_hostname: str) -> None:
+    """Reject a remote token that is neither an IP address nor a valid hostname."""
+
+    config_root_path = _snapshot_create(
+        tmp_path,
+        config_text=f"client\nremote {remote_hostname} 1194\n",
+        login="",
+        password="",
+    )
+
+    with pytest.raises(ValueError, match="remote hostname is invalid"):
         OpenvpnSnapshot.from_root(config_root_path)
 
 

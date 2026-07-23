@@ -146,6 +146,7 @@ class OpenvpnSnapshot(BaseModel):
     config_root_path: Path
     document: VpnSnapshotDocument = Field(repr=False)
     file_sha256_by_relative_path_map: dict[str, str] = Field(repr=False)
+    remote_hostname_list: list[str]
 
     @classmethod
     def from_root(cls, config_root_path: Path) -> Self:
@@ -180,30 +181,37 @@ class OpenvpnSnapshot(BaseModel):
                     location[0] if location and location[0] in {"config_path", "login", "password"} else "document"
                 )
                 diagnostic_list.append(f"{field_name}:{error['type']}")
-            raise ValueError(f"invalid VPN config document: {'; '.join(diagnostic_list)}") from exc
+            raise ValueError(f"invalid VPN config document: {'; '.join(diagnostic_list)}") from None
         config_relative_path = Path(document.config_path)
         config_path = config_root_path / config_relative_path
         if config_relative_path.suffix.lower() not in {".conf", ".ovpn"}:
             raise ValueError("OpenVPN config_path must end with .conf or .ovpn")
         if document.config_path not in file_sha256_by_relative_path_map:
             raise ValueError(f"OpenVPN config file is missing: {document.config_path}")
-        _openvpn_config_line_list_get(
+        config_line_list = _openvpn_config_line_list_get(
             config_path=config_path,
             materialized_root_path=None,
             document=document,
+            remote_ip_by_hostname_map=None,
         )
         return cls(
             config_relative_path=config_relative_path,
             config_root_path=config_root_path,
             document=document,
             file_sha256_by_relative_path_map=file_sha256_by_relative_path_map,
+            remote_hostname_list=_openvpn_remote_hostname_list_get(config_line_list),
         )
 
-    def attempt_materialize(self, attempt_root_path: Path) -> OpenvpnAttempt:
+    def attempt_materialize(
+        self,
+        attempt_root_path: Path,
+        remote_ip_by_hostname_map: dict[str, str] | None = None,
+    ) -> OpenvpnAttempt:
         """Copy and rewrite the validated snapshot into one private attempt root.
 
         Args:
             attempt_root_path: New private runtime directory for one provider attempt.
+            remote_ip_by_hostname_map: Runtime-resolved IP address for every remote hostname.
 
         Returns:
             Absolute rewritten OpenVPN configuration and credential paths.
@@ -233,6 +241,7 @@ class OpenvpnSnapshot(BaseModel):
             config_path=config_path,
             materialized_root_path=snapshot_root_path,
             document=self.document,
+            remote_ip_by_hostname_map=remote_ip_by_hostname_map,
         )
         config_path.write_text("\n".join(config_line_list) + "\n", encoding="utf-8")
         os.chmod(config_path, 0o600)
@@ -256,6 +265,7 @@ def _openvpn_config_line_list_get(
     config_path: Path,
     materialized_root_path: Path | None,
     document: VpnSnapshotDocument,
+    remote_ip_by_hostname_map: dict[str, str] | None,
 ) -> list[str]:
     """Validate OpenVPN directives and optionally render attempt-local paths.
 
@@ -263,6 +273,7 @@ def _openvpn_config_line_list_get(
         config_path: Exact source or copied OpenVPN configuration file.
         materialized_root_path: Attempt-local snapshot root, or `None` for static validation.
         document: Protocol-neutral snapshot document.
+        remote_ip_by_hostname_map: Runtime-resolved IP address for every remote hostname.
 
     Returns:
         Validated source lines or materialized rewritten lines.
@@ -318,13 +329,25 @@ def _openvpn_config_line_list_get(
             continue
         if directive_name == "remote":
             if not argument_list:
-                raise ValueError(f"OpenVPN remote is missing an IP address at line {line_number}")
+                raise ValueError(f"OpenVPN remote is missing a host at line {line_number}")
             try:
                 ipaddress.ip_address(argument_list[0])
-            except ValueError as exc:
-                raise ValueError(
-                    f"OpenVPN remote must use a literal IP address for fail-closed bootstrap at line {line_number}"
-                ) from exc
+            except ValueError:
+                _openvpn_remote_hostname_validate(argument_list[0], line_number)
+                if materialized_root_path is not None:
+                    if remote_ip_by_hostname_map is None or argument_list[0] not in remote_ip_by_hostname_map:
+                        raise ValueError(
+                            f"OpenVPN remote hostname has no runtime-resolved IP address at line {line_number}"
+                        )
+                    resolved_ip = remote_ip_by_hostname_map[argument_list[0]]
+                    try:
+                        ipaddress.ip_address(resolved_ip)
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"OpenVPN remote hostname has an invalid runtime-resolved IP address at line {line_number}"
+                        ) from exc
+                    token_list[1] = resolved_ip
+                    source_line = shlex.join(token_list)
         if directive_name in _OPENVPN_FILE_DIRECTIVE_SET:
             if not argument_list:
                 raise ValueError(f"OpenVPN {directive_name} is missing a file path at line {line_number}")
@@ -365,6 +388,68 @@ def _openvpn_config_line_list_get(
         rendered_line_list.append(f"auth-user-pass {shlex.quote(str(authentication_path))}")
         rendered_line_list.append("auth-nocache")
     return rendered_line_list
+
+
+def _openvpn_remote_hostname_list_get(config_line_list: list[str]) -> list[str]:
+    """Return unique remote hostnames in source order from validated lines.
+
+    Args:
+        config_line_list: Validated OpenVPN source lines.
+
+    Returns:
+        Unique remote hostnames.
+    """
+
+    remote_hostname_list: list[str] = []
+    inline_block_name: str | None = None
+    for config_line in config_line_list:
+        stripped_line = config_line.strip()
+        if inline_block_name is not None:
+            if stripped_line == f"</{inline_block_name}>":
+                inline_block_name = None
+            continue
+        if stripped_line.startswith("<") and stripped_line.endswith(">") and not stripped_line.startswith("</"):
+            inline_block_name = stripped_line[1:-1].lower()
+            continue
+        token_list = shlex.split(config_line, comments=True, posix=True)
+        if not token_list or token_list[0].lower() != "remote":
+            continue
+        remote_host = token_list[1]
+        try:
+            ipaddress.ip_address(remote_host)
+        except ValueError:
+            if remote_host not in remote_hostname_list:
+                remote_hostname_list.append(remote_host)
+    return remote_hostname_list
+
+
+def _openvpn_remote_hostname_validate(remote_hostname: str, line_number: int) -> None:
+    """Require one syntactically valid DNS hostname without resolving it.
+
+    Args:
+        remote_hostname: Candidate OpenVPN remote hostname.
+        line_number: One-based source line number for diagnostics.
+    """
+
+    normalized_hostname = remote_hostname.removesuffix(".")
+    try:
+        encoded_hostname = normalized_hostname.encode("idna").decode("ascii")
+    except UnicodeError as exc:
+        raise ValueError(f"OpenVPN remote hostname is invalid at line {line_number}") from exc
+    label_list = encoded_hostname.split(".")
+    if (
+        not normalized_hostname
+        or len(encoded_hostname) > 253
+        or any(
+            not label
+            or len(label) > 63
+            or label.startswith("-")
+            or label.endswith("-")
+            or any(not (character.isalnum() or character == "-") for character in label)
+            for label in label_list
+        )
+    ):
+        raise ValueError(f"OpenVPN remote hostname is invalid at line {line_number}")
 
 
 def _snapshot_file_sha256_by_relative_path_map_get(config_root_path: Path) -> dict[str, str]:
