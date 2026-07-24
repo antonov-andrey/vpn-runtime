@@ -1,8 +1,22 @@
 # Repository Guidelines
 
+## Required Standards
+
+- `project-standards:project-foundation` applies to all work in this repository.
+- `project-standards:project-instruction-developer` applies to instruction artifacts.
+- `project-standards:project-documentation-developer` applies to `DESIGN.md`.
+- `project-standards:python-developer`, `project-standards:python-cli-developer`, and `project-standards:pytest-developer` apply to Python code, entrypoints, and tests.
+- `project-standards:runtime-config-developer` applies to environment-backed runtime configuration.
+- `project-standards:docker-compose-developer` and `project-standards:kubernetes-developer` apply to container and Kubernetes deployment artifacts.
+- `workflow-container-agent-tools:workflow-container-developer` applies to workflow-container gateway integration.
+
+If one required provider skill is unavailable, continue read-only discovery only and do not mutate this repository until the provider is restored.
+
+Active task pairs live only under the ignored `.spec/` root.
+
 ## Scope
 - This repository owns reusable VPN gateway execution and exact VPN configuration validation.
-- Shared workflow-container ecosystem authoring and code quality rules live in the `workflow-container-tools` plugin reference `references/workflow-container-authoring.md`.
+- Shared workflow-container ecosystem authoring and code quality rules belong to `workflow-container-agent-tools:workflow-container-developer`.
 - `workflow-control-center` owns `VpnConfig`, `VpnConfigVersion`, publication, authorization, connection slots, run scheduling, Kubernetes orchestration, and active-Version rotation.
 - `browser-runtime` is one ordinary SOCKS5 consumer and must not be imported by this repository.
 - Do not add workflow-specific, browser-specific, user-management, billing, or Product API behavior.
@@ -28,4 +42,4 @@
 - Run `python -m pytest -q` after behavior changes.
 - Run `python -m compileall vpn_runtime` before handoff.
 - Run the container integration suite with real `/dev/net/tun`, a valid OpenVPN snapshot, controlled DNS/HTTPS endpoints, and SOCKS5 egress before runtime handoff.
-- Re-read `README.md` and `doc/design/vpn-runtime.md` after changes to runtime boundaries.
+- Re-read `README.md` and `DESIGN.md` after changes to runtime boundaries.

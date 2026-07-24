@@ -1,4 +1,4 @@
-# VPN Runtime Design
+# VPN Runtime
 
 ## Purpose
 
