@@ -1,5 +1,13 @@
 # Repository Guidelines
 
+## Table Of Contents
+
+- [Required Standards](#required-standards)
+- [Scope](#scope)
+- [Security](#security)
+- [Python](#python)
+- [Verification](#verification)
+
 ## Required Standards
 
 - `project-standards:project-foundation` applies to all work in this repository.
