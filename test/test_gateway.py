@@ -276,6 +276,7 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", process_create)
         monkeypatch.setattr(subprocess, "run", command_run)
+        monkeypatch.setattr(gateway, "_dnsmasq_ready_wait", lambda: asyncio.sleep(0))
 
         await gateway._dnsmasq_start()
         gateway._proxy_dns_redirect_set(enabled=True)
@@ -290,6 +291,80 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
         assert {command[command.index("-p") + 1] for command in iptables_command_list} == {"tcp", "udp"}
         assert any("DNAT" in command and "127.0.0.1:5353" in command for command in iptables_command_list)
         assert any("ACCEPT" in command and "5353" in command for command in iptables_command_list)
+
+    asyncio.run(run())
+
+
+def test_gateway_dnsmasq_readiness_rejects_an_early_process_exit(tmp_path: Path) -> None:
+    """Surface a concrete target-DNS startup failure before opening SOCKS egress."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+
+        class ExitedProcess:
+            """Represent a target-DNS process that failed during startup."""
+
+            returncode = 5
+
+        gateway._dnsmasq_process = ExitedProcess()
+
+        with pytest.raises(RuntimeError, match="dnsmasq exited before target DNS readiness"):
+            await gateway._dnsmasq_ready_wait()
+
+    asyncio.run(run())
+
+
+def test_gateway_health_monitor_restarts_the_complete_user_plane(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Stop the surviving listener before replacing a failed DNS or SOCKS child."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        event_list: list[str] = []
+        user_plane_started = asyncio.Event()
+
+        class RunningProcess:
+            """Represent one still-running owned child."""
+
+            returncode = None
+
+        class ExitedProcess:
+            """Represent one failed owned child."""
+
+            returncode = 1
+
+        async def health_server_is_ready() -> bool:
+            """Keep the provider tunnel ready while one user-plane child fails."""
+
+            return True
+
+        async def user_plane_stop() -> None:
+            """Capture complete user-plane shutdown."""
+
+            event_list.append("stop")
+
+        async def user_plane_start() -> None:
+            """Capture replacement after the shutdown boundary."""
+
+            event_list.append("start")
+            user_plane_started.set()
+
+        gateway._gluetun_process = RunningProcess()
+        gateway._dante_process = RunningProcess()
+        gateway._dnsmasq_process = ExitedProcess()
+        gateway._status_set(generation=7, state=GatewayState.READY)
+        monkeypatch.setattr(gateway, "_health_server_is_ready", health_server_is_ready)
+        monkeypatch.setattr(gateway, "_user_plane_stop", user_plane_stop)
+        monkeypatch.setattr(gateway, "_user_plane_start", user_plane_start)
+
+        monitor_task = asyncio.create_task(gateway._health_monitor(generation=7))
+        await asyncio.wait_for(user_plane_started.wait(), timeout=1)
+        monitor_task.cancel()
+        await asyncio.gather(monitor_task, return_exceptions=True)
+
+        assert event_list[:2] == ["stop", "start"]
 
     asyncio.run(run())
 

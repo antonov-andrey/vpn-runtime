@@ -540,9 +540,28 @@ class GatewayRuntime:
         self._output_task_list.append(
             asyncio.create_task(self._process_output_forward("dnsmasq", self._dnsmasq_process))
         )
-        await asyncio.sleep(0)
-        if self._dnsmasq_process.returncode is not None:
-            raise RuntimeError("dnsmasq exited before target DNS readiness")
+        await self._dnsmasq_ready_wait()
+
+    async def _dnsmasq_ready_wait(self) -> None:
+        """Wait until the tunnel-bound DNS forwarder accepts a local TCP connection."""
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.config.activation_timeout_seconds
+        while loop.time() < deadline:
+            if self._dnsmasq_process is None or self._dnsmasq_process.returncode is not None:
+                raise RuntimeError(f"dnsmasq exited before target DNS readiness: {self._recent_diagnostic_get()}")
+            try:
+                connection = await asyncio.to_thread(
+                    socket.create_connection,
+                    ("127.0.0.1", self.config.proxy_dns_port),
+                    0.5,
+                )
+            except OSError:
+                await asyncio.sleep(0.2)
+                continue
+            connection.close()
+            return
+        raise RuntimeError("target DNS forwarder readiness timed out")
 
     async def _gluetun_ready_wait(self, timeout_seconds: int) -> None:
         """Wait until Gluetun health proves the exact tunnel is usable.
@@ -657,6 +676,7 @@ class GatewayRuntime:
                         or self._dnsmasq_process is None
                         or self._dnsmasq_process.returncode is not None
                     ):
+                        await self._user_plane_stop()
                         await self._user_plane_start()
                     self._status_set(generation=generation, state=GatewayState.READY)
                 await asyncio.sleep(self.config.reconnect_poll_seconds)
