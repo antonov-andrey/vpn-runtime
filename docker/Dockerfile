@@ -1,4 +1,4 @@
-ARG PYTHON_IMAGE=docker.io/library/python@sha256:6b91e66ab2a880ce9ca5a1b91c70f45963ff71ff68268df056336e1a657d5efd
+ARG PYTHON_IMAGE=docker.io/library/python:3.14-alpine3.22
 ARG GLUETUN_IMAGE=docker.io/qmcgaw/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab
 
 FROM ${PYTHON_IMAGE} AS python-runtime
