@@ -2,3 +2,6 @@
 !pyproject.toml
 !vpn_runtime/
 !vpn_runtime/**
+!docker/
+!docker/build-requirements.lock
+!docker/requirements.lock
