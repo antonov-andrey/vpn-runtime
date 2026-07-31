@@ -67,9 +67,9 @@ uv pip install -e ".[test]"
 python -m pytest -q
 python -m compileall vpn_runtime
 docker build \
-  --build-arg GLUETUN_IMAGE=docker.io/qmcgaw/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab \
-  --build-arg PYTHON_IMAGE=docker.io/library/python:3.14-alpine3.22 \
+  --build-arg GLUETUN_IMAGE=ghcr.io/qdm12/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab \
+  --build-arg PYTHON_IMAGE=public.ecr.aws/docker/library/python:3.14-alpine3.22 \
   -f docker/Dockerfile -t vpn-runtime:local .
 ```
 
-Product release resolves both supported base selectors to exact platform digests. Python build/runtime dependencies are installed only from committed hash-locked requirements; the local selector above is not a Product release identity.
+Product release resolves both supported base selectors to exact platform digests. `python-alpine` is the explicit libc compatibility variant: Python artifacts are copied into the Alpine/musl Gluetun final image and therefore cannot reuse the platform's canonical Debian/glibc Python image. Python build/runtime dependencies are installed only from committed hash-locked requirements; the local selectors above are not a Product release identity.
