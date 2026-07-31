@@ -66,5 +66,10 @@ source .venv/bin/activate
 uv pip install -e ".[test]"
 python -m pytest -q
 python -m compileall vpn_runtime
-docker build -f docker/Dockerfile -t vpn-runtime:local .
+docker build \
+  --build-arg GLUETUN_IMAGE=docker.io/qmcgaw/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab \
+  --build-arg PYTHON_IMAGE=docker.io/library/python:3.14-alpine3.22 \
+  -f docker/Dockerfile -t vpn-runtime:local .
 ```
+
+Product release resolves both supported base selectors to exact platform digests. Python build/runtime dependencies are installed only from committed hash-locked requirements; the local selector above is not a Product release identity.

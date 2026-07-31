@@ -1,5 +1,5 @@
-ARG PYTHON_IMAGE=docker.io/library/python:3.14-alpine3.22
-ARG GLUETUN_IMAGE=docker.io/qmcgaw/gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab
+ARG GLUETUN_IMAGE
+ARG PYTHON_IMAGE
 
 FROM ${PYTHON_IMAGE} AS python-runtime
 
@@ -7,8 +7,13 @@ WORKDIR /build
 
 COPY pyproject.toml ./
 COPY vpn_runtime ./vpn_runtime
+COPY docker/build-requirements.lock docker/requirements.lock /build-lock/
 
-RUN python -m pip install --no-cache-dir --prefix=/opt/vpn-runtime .
+RUN python -m pip install --no-cache-dir --require-hashes \
+        -r /build-lock/build-requirements.lock \
+        -r /build-lock/requirements.lock \
+    && python -m pip install --no-build-isolation --no-cache-dir --no-deps --prefix=/opt/vpn-runtime . \
+    && rm -rf /build-lock
 
 FROM ${GLUETUN_IMAGE}
 

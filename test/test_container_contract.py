@@ -5,13 +5,17 @@ from pathlib import Path
 import yaml
 
 
-def test_dockerfile_selects_python_branch_and_pins_gateway_implementations() -> None:
-    """Track Python patch updates while keeping gateway implementations reproducibly selected."""
+def test_dockerfile_requires_release_owned_bases_and_pins_gateway_packages() -> None:
+    """Require exact release inputs while keeping image-local packages reproducible."""
 
     dockerfile_text = Path("docker/Dockerfile").read_text(encoding="utf-8")
 
-    assert "python:3.14-alpine3.22" in dockerfile_text
-    assert "gluetun@sha256:1a5bf4b4820a879cdf8d93d7ef0d2d963af56670c9ebff8981860b6804ebc8ab" in dockerfile_text
+    assert dockerfile_text.startswith("ARG GLUETUN_IMAGE\nARG PYTHON_IMAGE\n")
+    assert "FROM ${PYTHON_IMAGE} AS python-runtime" in dockerfile_text
+    assert "FROM ${GLUETUN_IMAGE}" in dockerfile_text
+    assert "ARG GLUETUN_IMAGE=" not in dockerfile_text
+    assert "ARG PYTHON_IMAGE=" not in dockerfile_text
+    assert "--require-hashes" in dockerfile_text
     assert "dante-server=1.4.4-r0" in dockerfile_text
     assert "dnsmasq=2.91-r1" in dockerfile_text
     assert "adduser -D -H -s /sbin/nologin -u 1001 -G vpndns vpndns" in dockerfile_text
