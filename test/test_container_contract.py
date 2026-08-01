@@ -4,11 +4,13 @@ from pathlib import Path
 
 import yaml
 
+VPN_RUNTIME_ROOT = Path(__file__).resolve().parents[1]
+
 
 def test_dockerfile_requires_release_owned_bases_and_pins_gateway_packages() -> None:
     """Require exact release inputs while keeping image-local packages reproducible."""
 
-    dockerfile_text = Path("docker/Dockerfile").read_text(encoding="utf-8")
+    dockerfile_text = (VPN_RUNTIME_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
 
     assert dockerfile_text.startswith("ARG GLUETUN_IMAGE\nARG PYTHON_IMAGE\n")
     assert "FROM ${PYTHON_IMAGE} AS python-runtime" in dockerfile_text
@@ -27,7 +29,9 @@ def test_dockerfile_requires_release_owned_bases_and_pins_gateway_packages() -> 
 def test_kubernetes_gateway_starts_prepared_with_minimal_secret_and_tunnel_access() -> None:
     """Expose SOCKS only after activation while keeping management local and credentials read-only."""
 
-    resource_list = list(yaml.safe_load_all(Path("deploy/k8s/gateway.yaml").read_text(encoding="utf-8")))
+    resource_list = list(
+        yaml.safe_load_all((VPN_RUNTIME_ROOT / "deploy" / "k8s" / "gateway.yaml").read_text(encoding="utf-8"))
+    )
     deployment = next(resource for resource in resource_list if resource["kind"] == "Deployment")
     service = next(resource for resource in resource_list if resource["kind"] == "Service")
     pod_spec = deployment["spec"]["template"]["spec"]
