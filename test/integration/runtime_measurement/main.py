@@ -38,11 +38,16 @@ async def _run(argument_by_name_map: dict[str, object]) -> RuntimeMeasurementRep
     sample_list = []
     diagnostic = ""
     status = "passed"
+    scenario_name = "activation"
     try:
         sample_list.extend(await measurement.activation_sample_list_get(round_count=round_count))
+        scenario_name = "provider_blackhole_recovery"
         sample_list.append(await measurement.provider_blackhole_recovery_get())
+        scenario_name = "provider_dns_change_replacement"
         sample_list.append(await measurement.provider_dns_change_replacement_get())
+        scenario_name = "invalid_authentication"
         sample_list.append(await measurement.invalid_authentication_get())
+        scenario_name = "forced_process_stop"
         sample_list.append(
             await forced_process_stop_get(
                 config_root_path=Path(argument_by_name_map["config_root_path"]),
@@ -50,10 +55,11 @@ async def _run(argument_by_name_map: dict[str, object]) -> RuntimeMeasurementRep
                 runtime_root_path=runtime_root_path / "forced-process-stop",
             )
         )
+        scenario_name = "stable_proxy_switch_restart"
         sample_list.append(await stable_proxy_switch_restart_get(runtime_root_path=runtime_root_path / "stable-proxy"))
     except Exception as exc:
         status = "failed"
-        diagnostic = f"{type(exc).__name__}: measurement scenario failed"
+        diagnostic = f"{type(exc).__name__}: {scenario_name} measurement failed"
     report = RuntimeMeasurementReport(
         architecture=platform.machine(),
         diagnostic=diagnostic,

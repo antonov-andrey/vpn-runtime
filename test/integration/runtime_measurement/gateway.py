@@ -170,6 +170,7 @@ class GatewayMeasurement:
         if not config_document.get("login"):
             raise RuntimeError("accepted measurement snapshot does not use provider authentication")
         config_document["password"] = "invalid-measurement-password"
+        os.chmod(config_path, 0o600)
         config_path.write_text(json.dumps(config_document, separators=(",", ":")) + "\n", encoding="utf-8")
         os.chmod(config_path, 0o400)
         runtime = gateway_get(
