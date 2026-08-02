@@ -2,7 +2,7 @@
 
 Reusable VPN gateway and validation runtime for platform-managed `VpnConfigVersion` snapshots.
 
-The runtime currently supports `protocol="openvpn"`. One process boundary owns one exact configuration snapshot, one VPN tunnel, one fail-closed SOCKS5 listener, readiness, reconnect, and cleanup. `workflow-control-center` owns users, publication, Versions, connection slots, Kubernetes resources, and active-Version switching.
+The runtime currently supports `protocol="openvpn"`. One gateway process boundary owns one exact configuration snapshot, one VPN tunnel, one fail-closed SOCKS5 listener, readiness, reconnect, and bounded cleanup. The repository also supplies the credentialless stable fail-closed proxy used to atomically switch gateway generations. `workflow-control-center` owns users, publication, Versions, connection slots, Kubernetes resources, and active-Version orchestration; VPN state does not control `WorkflowRun` lifecycle.
 
 ## Input
 
@@ -32,7 +32,7 @@ The final image pins Gluetun `v3.41.1` by OCI index digest, Dante server `1.4.4-
 
 Dante binds outbound target connections explicitly to `tun0`. UID-scoped firewall rules redirect only DNS from `vpnproxy` to a local dnsmasq process, whose upstream sockets are explicitly bound to `tun0`; other container processes continue to use the standard resolver. The container requires `/dev/net/tun` and exactly `CHOWN`, `KILL`, `NET_ADMIN`, `NET_RAW`, `SETGID`, and `SETUID`; dnsmasq uses `NET_RAW` to bind upstream sockets to the tunnel interface, while the owning supervisor uses `KILL` to stop its own dnsmasq and Dante children after they drop to isolated UIDs. The DNS forwarder and SOCKS listener start only after tunnel health succeeds, stop as one unit when either child or tunnel health is lost, and cannot fall back to the ordinary interface during initial connection, reconnect, or provider outage.
 
-The platform starts a gateway in prepared state without opening a provider connection. A strict control command addressed to the exact Pod UID activates, reports, or stops one fenced generation through a mode-`0600` local Unix socket:
+The platform starts a gateway in prepared state without opening a provider connection. Optional DNS prefetch is not attempt identity: activation repeats the authoritative standard-DNS lookup immediately before starting the provider. A strict control command addressed to the exact Pod UID activates, reports, or stops one fenced generation through a mode-`0600` local Unix socket:
 
 ```bash
 vpn-runtime-control --socket-path /runtime/vpn/control.sock activate 42
@@ -40,9 +40,11 @@ vpn-runtime-control --socket-path /runtime/vpn/control.sock status 42
 vpn-runtime-control --socket-path /runtime/vpn/control.sock stop 42
 ```
 
-Commands are idempotent for the current generation and reject older generations. Redacted status is atomically persisted for readiness and restart fencing. There is no public REST API, shell command execution, or exposed upstream Gluetun control/health port.
+Commands are idempotent for the current generation and reject older generations. Redacted status is atomically persisted for readiness and restart fencing. Persisted generation never restores process readiness or an upstream after restart. There is no public REST API, shell command execution, or exposed upstream Gluetun control/health port.
 
-Ordinary provider reconnect stays inside the same gateway, slot, Pod, and Service. Existing TCP connections may fail once; new target traffic remains blocked until tunnel readiness returns. If one provider process exits or does not recover within 30 seconds, the runtime replaces its private attempt, resolves source hostnames again with the standard resolver, and restores target DNS and SOCKS only after the new tunnel is ready.
+Ordinary provider reconnect stays inside the same gateway, slot, Pod, and Service. Existing TCP connections may fail once; new target traffic remains blocked until tunnel readiness returns. Each Version provides immutable `connection_attempt_timeout_seconds`, `provider_recovery_grace_seconds`, and `process_stop_timeout_seconds` with baseline defaults `180`, `180`, and `30`; concrete values must also satisfy the platform safety ranges accepted from real ARM64 measurements and resource-ownership limits. An attempt has one monotonic connection deadline, current Gluetun gets the configured recovery grace, and owned process groups share one bounded TERM/KILL stop deadline. After provider exit or grace expiry, the runtime replaces only its private attempt in the same Pod, resolves source hostnames again with the standard resolver, and restores target DNS and SOCKS only after the new tunnel is ready. Gateway mode retries transient attempts indefinitely with exponential backoff from 1 to 300 seconds; validation mode returns after one bounded lifecycle so WCC can release and fairly reacquire a slot. Health is observed every 5 seconds independently of retry backoff.
+
+The stable proxy is a separate minimal non-root OCI image target without gateway packages or capabilities. It accepts only exact run traffic and only the selected gateway upstream. It has no direct fallback, VPN secret, `/dev/net/tun`, AWS identity, or Kubernetes token. It generates a new runtime instance identity and starts disabled after every process or Pod restart. Its private Unix control socket supports generation-fenced disable, atomic exact-upstream switch, and status; commands bind expected Pod UID and runtime instance identity, and equal-generation idempotence is scoped to that exact instance. The platform rechecks status and binds applied state to the same tuple; raw component APIs are not exposed.
 
 ## Validation
 
@@ -51,12 +53,12 @@ The validation runner uses the same pinned final image and protocol adapter as t
 - strict static parsing and unsafe-directive rejection;
 - real tunnel establishment;
 - standard-DNS OpenVPN hostname bootstrap and fresh provider-attempt resolution;
-- SOCKS5 TCP access to a platform-owned HTTPS endpoint by hostname;
+- SOCKS5 TCP access to a private platform-owned presigned S3 nonce by hostname;
 - proof that target DNS and target traffic use the tunnel;
 - fail-closed proof while the tunnel is unavailable;
 - clean shutdown with no remaining provider connection.
 
-The report contains status, phase, failure classification, observed exit IP, proof flags, microsecond timestamps, and concrete redacted diagnostics. It never contains configuration or credential bytes. The HTTPS check emits a SOCKS5 domain-name target, so successful TLS verification proves proxy-side target DNS.
+The report contains status, phase, failure classification, proof flags, microsecond timestamps, and concrete redacted diagnostics. Exit IP, presigned URL, nonce, configuration, and credential bytes are absent. The validation Job has no AWS credentials; exact nonce bytes prove egress, while the SOCKS5 domain-name target and successful TLS verification prove proxy-side target DNS.
 
 ## Development
 

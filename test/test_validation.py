@@ -63,12 +63,12 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     call_count = 0
 
     def socks_https_get(**kwargs: object) -> SocksHttpsResponse:
-        """Return observed egress once, then fail after provider interruption."""
+        """Return exact nonce once, then fail after provider interruption."""
 
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return SocksHttpsResponse(body=b'{"ip":"198.51.100.20"}', status_code=200)
+            return SocksHttpsResponse(body=b"private-nonce", status_code=200)
         raise ConnectionError("provider transport unavailable")
 
     monkeypatch.setattr(validation, "GatewayRuntime", FakeValidationGateway)
@@ -77,7 +77,8 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     report = asyncio.run(
         validation_run(
             config_root_path=tmp_path / "config",
-            https_url="https://validation.example.test/ip",
+            expected_nonce=b"private-nonce",
+            https_url="https://validation.example.test/nonce",
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=tmp_path / "runtime",
         )
@@ -86,7 +87,7 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     assert report.status is ValidationStatus.PASSED
     assert report.phase is ValidationPhase.CLEANUP
     assert report.failure_kind == ""
-    assert report.observed_exit_ip == "198.51.100.20"
+    assert report.nonce_proven
     assert report.proxy_side_dns_proven
     assert report.fail_closed_proven
     assert report.clean_shutdown_proven
@@ -113,6 +114,7 @@ def test_validation_classifies_static_rejection_as_deterministic_configuration_f
     report = asyncio.run(
         validation_run(
             config_root_path=tmp_path / "config",
+            expected_nonce=b"private-nonce",
             https_url="https://validation.example.test/ip",
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=tmp_path / "runtime",
@@ -145,6 +147,7 @@ def test_validation_static_report_excludes_invalid_document_credentials(tmp_path
     report = asyncio.run(
         validation_run(
             config_root_path=config_root_path,
+            expected_nonce=b"private-nonce",
             https_url="https://validation.example.test/ip",
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=tmp_path / "runtime",
@@ -181,6 +184,7 @@ def test_validation_classifies_proven_provider_rejection_as_configuration_failur
     report = asyncio.run(
         validation_run(
             config_root_path=tmp_path / "config",
+            expected_nonce=b"private-nonce",
             https_url="https://validation.example.test/ip",
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=tmp_path / "runtime",

@@ -23,11 +23,15 @@ DEFAULT_DNSMASQ_EXECUTABLE_PATH = Path("/usr/sbin/dnsmasq")
 DEFAULT_GLUETUN_AUTHENTICATION_PATH = Path("/etc/openvpn/auth.conf")
 DEFAULT_GLUETUN_EXECUTABLE_PATH = Path("/gluetun-entrypoint")
 DEFAULT_HEALTH_PORT = 9999
+DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
 DEFAULT_IPTABLES_EXECUTABLE_PATH = Path("/usr/sbin/iptables")
 DEFAULT_PROXY_DNS_PORT = 5353
 DEFAULT_SOCKS_PORT = 1080
 DEFAULT_SYSTEM_RESOLV_CONF_PATH = Path("/etc/resolv.conf")
 PROXY_DNS_UPSTREAM_IP_LIST = ["1.1.1.1", "1.0.0.1"]
+PROVIDER_RETRY_INITIAL_SECONDS = 1.0
+PROVIDER_RETRY_MAXIMUM_SECONDS = 300.0
+PROCESS_EXIT_PROOF_TIMEOUT_SECONDS = 5.0
 VPN_PROXY_GID = 1000
 VPN_PROXY_UID = 1000
 
@@ -52,6 +56,10 @@ socks pass {{
 
 class GatewayConfigurationError(RuntimeError):
     """Raised when provider output proves one deterministic snapshot failure."""
+
+
+class GatewaySupervisorFailure(RuntimeError):
+    """Raised when owned-process cleanup or the local supervisor cannot be proven safe."""
 
 
 class GatewayState(StrEnum):
@@ -82,7 +90,7 @@ class GatewayConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True)
 
-    activation_timeout_seconds: int = Field(default=120, ge=1)
+    connection_attempt_timeout_seconds: int = Field(default=180, ge=1)
     config_root_path: Path
     dante_executable_path: Path = DEFAULT_DANTE_EXECUTABLE_PATH
     dnsmasq_executable_path: Path = DEFAULT_DNSMASQ_EXECUTABLE_PATH
@@ -90,11 +98,10 @@ class GatewayConfig(BaseModel):
     gluetun_executable_path: Path = DEFAULT_GLUETUN_EXECUTABLE_PATH
     health_port: int = Field(default=DEFAULT_HEALTH_PORT, ge=1, le=65535)
     iptables_executable_path: Path = DEFAULT_IPTABLES_EXECUTABLE_PATH
-    process_stop_timeout_seconds: int = Field(default=10, ge=1)
+    process_stop_timeout_seconds: int = Field(default=30, ge=1)
     protocol: VpnProtocol
-    provider_reconnect_timeout_seconds: int = Field(default=30, ge=1)
+    provider_recovery_grace_seconds: int = Field(default=180, ge=1)
     proxy_dns_port: int = Field(default=DEFAULT_PROXY_DNS_PORT, ge=1024, le=65535)
-    reconnect_poll_seconds: float = Field(default=1.0, gt=0)
     runtime_root_path: Path
     socks_host: str = "0.0.0.0"
     socks_port: int = Field(default=DEFAULT_SOCKS_PORT, ge=1, le=65535)
@@ -141,6 +148,8 @@ class GatewayRuntime:
         self._dnsmasq_process: asyncio.subprocess.Process | None = None
         self._gluetun_process: asyncio.subprocess.Process | None = None
         self._gluetun_authentication_link_is_owned = False
+        self._fatal_failure_diagnostic = ""
+        self._fatal_failure_event = asyncio.Event()
         self._health_monitor_task: asyncio.Task[None] | None = None
         self._output_task_list: list[asyncio.Task[None]] = []
         self._provider_attempt_number = 0
@@ -196,12 +205,27 @@ class GatewayRuntime:
         self._attempt_root_path = attempt_root_path
         try:
             attempt_root_path.mkdir(mode=0o700)
-            await self._provider_attempt_start()
-            await self._gluetun_ready_wait(self.config.activation_timeout_seconds)
-            await self._user_plane_start()
+            provider_start_time = await self._provider_attempt_start()
+            connection_deadline = provider_start_time + self.config.connection_attempt_timeout_seconds
+            await self._gluetun_ready_wait(connection_deadline)
+            await self._user_plane_start(connection_deadline)
         except BaseException as exc:
             diagnostic = self._diagnostic_redact(str(exc))
-            await self._process_cleanup()
+            try:
+                await self._process_cleanup(self._process_stop_deadline_get())
+            except BaseException as cleanup_exc:
+                if isinstance(cleanup_exc, asyncio.CancelledError):
+                    raise
+                supervisor_failure = GatewaySupervisorFailure(
+                    self._diagnostic_redact(f"gateway activation cleanup failed: {cleanup_exc}")
+                )
+                self._fatal_failure_set(supervisor_failure)
+                self._status_set(
+                    generation=generation,
+                    state=GatewayState.FAILED,
+                    diagnostic=str(supervisor_failure),
+                )
+                raise supervisor_failure from cleanup_exc
             self._status_set(generation=generation, state=GatewayState.FAILED, diagnostic=diagnostic)
             if isinstance(exc, asyncio.CancelledError):
                 raise
@@ -210,6 +234,13 @@ class GatewayRuntime:
             raise RuntimeError(diagnostic) from exc
         self._status_set(generation=generation, state=GatewayState.READY)
         self._health_monitor_task = asyncio.create_task(self._health_monitor(generation))
+        self._health_monitor_task.add_done_callback(self._health_monitor_task_done)
+
+    async def fatal_failure_wait(self) -> str:
+        """Wait until this runtime can no longer safely supervise its owned processes."""
+
+        await self._fatal_failure_event.wait()
+        return self._fatal_failure_diagnostic
 
     async def stop(self) -> None:
         """Stop owned processes and remove every generated credential and attempt file."""
@@ -223,7 +254,7 @@ class GatewayRuntime:
         if health_monitor_task is not None and health_monitor_task is not asyncio.current_task():
             health_monitor_task.cancel()
             await asyncio.gather(health_monitor_task, return_exceptions=True)
-        await self._process_cleanup()
+        await self._process_cleanup(self._process_stop_deadline_get())
         self._status_set(generation=generation, state=GatewayState.STOPPED)
 
     def have_owned_processes(self) -> bool:
@@ -246,8 +277,9 @@ class GatewayRuntime:
         if health_monitor_task is not None:
             health_monitor_task.cancel()
             await asyncio.gather(health_monitor_task, return_exceptions=True)
-        await self._user_plane_stop()
-        await self._process_stop(self._gluetun_process)
+        process_stop_deadline = self._process_stop_deadline_get()
+        await self._user_plane_stop(process_stop_deadline)
+        await self._process_list_stop([self._gluetun_process], process_stop_deadline)
         self._gluetun_process = None
 
     def _diagnostic_redact(self, diagnostic: str) -> str:
@@ -299,19 +331,33 @@ class GatewayRuntime:
     async def _provider_attempt_restart(self) -> None:
         """Replace one unhealthy provider attempt after a fresh system-DNS resolution."""
 
-        await self._user_plane_stop()
-        await self._process_stop(self._gluetun_process)
-        self._gluetun_process = None
-        self._gluetun_authentication_link_remove()
-        if self._provider_attempt_root_path is not None:
-            await asyncio.to_thread(shutil.rmtree, self._provider_attempt_root_path, True)
-            self._provider_attempt_root_path = None
+        process_stop_deadline = self._process_stop_deadline_get()
+        try:
+            await self._user_plane_stop(process_stop_deadline)
+            await self._process_list_stop([self._gluetun_process], process_stop_deadline)
+            self._gluetun_process = None
+            self._gluetun_authentication_link_remove()
+            if self._provider_attempt_root_path is not None:
+                await asyncio.to_thread(shutil.rmtree, self._provider_attempt_root_path, True)
+                self._provider_attempt_root_path = None
+        except BaseException as exc:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise GatewaySupervisorFailure(
+                self._diagnostic_redact(f"owned provider attempt cleanup could not be proven: {exc}")
+            ) from exc
         self._configuration_failure_diagnostic = ""
-        await self._provider_attempt_start()
-        await self._gluetun_ready_wait(self.config.provider_reconnect_timeout_seconds)
+        provider_start_time = await self._provider_attempt_start()
+        connection_deadline = provider_start_time + self.config.connection_attempt_timeout_seconds
+        await self._gluetun_ready_wait(connection_deadline)
+        await self._user_plane_start(connection_deadline)
 
-    async def _provider_attempt_start(self) -> None:
-        """Resolve remote hostnames and start one private provider attempt."""
+    async def _provider_attempt_start(self) -> float:
+        """Resolve remote hostnames and start one private provider attempt.
+
+        Returns:
+            Monotonic provider-process start time.
+        """
 
         if self._attempt_root_path is None:
             raise RuntimeError("generation root is unavailable")
@@ -326,6 +372,7 @@ class GatewayRuntime:
         )
         self._gluetun_authentication_link_prepare(openvpn_attempt)
         await self._gluetun_start(openvpn_attempt)
+        return asyncio.get_running_loop().time()
 
     def _proxy_dns_redirect_set(self, *, enabled: bool) -> None:
         """Add or remove UID-scoped DNS redirects for the SOCKS process.
@@ -462,24 +509,34 @@ class GatewayRuntime:
             raise ValueError("system resolver contains no nameserver address")
         return system_dns_server_ip_list
 
-    async def _user_plane_start(self) -> None:
-        """Start tunnel-bound DNS and SOCKS only after provider readiness."""
+    async def _user_plane_start(self, connection_deadline: float) -> None:
+        """Start tunnel-bound DNS and SOCKS before the attempt deadline.
+
+        Args:
+            connection_deadline: One monotonic provider-attempt deadline.
+        """
 
         try:
-            await self._dnsmasq_start()
+            await self._dnsmasq_start(connection_deadline)
             await asyncio.to_thread(self._proxy_dns_redirect_set, enabled=True)
             await self._dante_start()
-            await self._socks_ready_wait()
+            await self._socks_ready_wait(connection_deadline)
         except BaseException:
-            await self._user_plane_stop()
+            await self._user_plane_stop(self._process_stop_deadline_get())
             raise
 
-    async def _user_plane_stop(self) -> None:
-        """Stop SOCKS and target DNS before provider replacement or shutdown."""
+    async def _user_plane_stop(self, process_stop_deadline: float) -> None:
+        """Stop SOCKS and target DNS before one shared graceful deadline.
 
-        await self._process_stop(self._dante_process)
+        Args:
+            process_stop_deadline: Monotonic common graceful-stop deadline.
+        """
+
+        await self._process_list_stop(
+            [self._dante_process, self._dnsmasq_process],
+            process_stop_deadline,
+        )
         self._dante_process = None
-        await self._process_stop(self._dnsmasq_process)
         self._dnsmasq_process = None
         if self._proxy_dns_redirect_is_owned:
             await asyncio.to_thread(self._proxy_dns_redirect_set, enabled=False)
@@ -517,8 +574,12 @@ class GatewayRuntime:
         )
         self._output_task_list.append(asyncio.create_task(self._process_output_forward("dante", self._dante_process)))
 
-    async def _dnsmasq_start(self) -> None:
-        """Start a target-DNS forwarder whose upstream sockets are bound to the tunnel."""
+    async def _dnsmasq_start(self, connection_deadline: float) -> None:
+        """Start target DNS whose upstream sockets are bound to the tunnel.
+
+        Args:
+            connection_deadline: One monotonic provider-attempt deadline.
+        """
 
         self._dnsmasq_process = await asyncio.create_subprocess_exec(
             str(self.config.dnsmasq_executable_path),
@@ -540,14 +601,17 @@ class GatewayRuntime:
         self._output_task_list.append(
             asyncio.create_task(self._process_output_forward("dnsmasq", self._dnsmasq_process))
         )
-        await self._dnsmasq_ready_wait()
+        await self._dnsmasq_ready_wait(connection_deadline)
 
-    async def _dnsmasq_ready_wait(self) -> None:
-        """Wait until the tunnel-bound DNS forwarder accepts a local TCP connection."""
+    async def _dnsmasq_ready_wait(self, connection_deadline: float) -> None:
+        """Wait for target DNS before the provider-attempt deadline.
+
+        Args:
+            connection_deadline: One monotonic provider-attempt deadline.
+        """
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.activation_timeout_seconds
-        while loop.time() < deadline:
+        while loop.time() < connection_deadline:
             if self._dnsmasq_process is None or self._dnsmasq_process.returncode is not None:
                 raise RuntimeError(f"dnsmasq exited before target DNS readiness: {self._recent_diagnostic_get()}")
             try:
@@ -563,16 +627,15 @@ class GatewayRuntime:
             return
         raise RuntimeError("target DNS forwarder readiness timed out")
 
-    async def _gluetun_ready_wait(self, timeout_seconds: int) -> None:
+    async def _gluetun_ready_wait(self, connection_deadline: float) -> None:
         """Wait until Gluetun health proves the exact tunnel is usable.
 
         Args:
-            timeout_seconds: Maximum wait for this provider attempt.
+            connection_deadline: One monotonic provider-attempt deadline.
         """
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_seconds
-        while loop.time() < deadline:
+        while loop.time() < connection_deadline:
             if self._configuration_failure_diagnostic:
                 raise GatewayConfigurationError(self._configuration_failure_diagnostic)
             if self._gluetun_process is None or self._gluetun_process.returncode is not None:
@@ -637,7 +700,9 @@ class GatewayRuntime:
         """Suppress user egress during reconnect and refresh stale provider DNS."""
 
         loop = asyncio.get_running_loop()
-        reconnect_start_time: float | None = None
+        provider_unhealthy_start_time: float | None = None
+        provider_retry_delay_seconds = PROVIDER_RETRY_INITIAL_SECONDS
+        provider_retry_time = 0.0
         try:
             while self._status.generation == generation:
                 gluetun_is_ready = (
@@ -646,17 +711,19 @@ class GatewayRuntime:
                     and await self._health_server_is_ready()
                 )
                 if not gluetun_is_ready:
-                    await self._user_plane_stop()
-                    if reconnect_start_time is None:
-                        reconnect_start_time = loop.time()
+                    await self._user_plane_stop(self._process_stop_deadline_get())
+                    if provider_unhealthy_start_time is None:
+                        provider_unhealthy_start_time = loop.time()
                     self._status_set(generation=generation, state=GatewayState.RECONNECTING)
                     provider_exited = self._gluetun_process is None or self._gluetun_process.returncode is not None
-                    reconnect_timed_out = (
-                        loop.time() - reconnect_start_time >= self.config.provider_reconnect_timeout_seconds
+                    provider_recovery_grace_expired = (
+                        loop.time() - provider_unhealthy_start_time >= self.config.provider_recovery_grace_seconds
                     )
-                    if provider_exited or reconnect_timed_out:
+                    if (provider_exited or provider_recovery_grace_expired) and loop.time() >= provider_retry_time:
                         try:
                             await self._provider_attempt_restart()
+                        except GatewaySupervisorFailure:
+                            raise
                         except GatewayConfigurationError:
                             raise
                         except RuntimeError as exc:
@@ -665,30 +732,68 @@ class GatewayRuntime:
                                 state=GatewayState.RECONNECTING,
                                 diagnostic=self._diagnostic_redact(str(exc)),
                             )
-                            await asyncio.sleep(self.config.reconnect_poll_seconds)
+                            provider_retry_time = loop.time() + provider_retry_delay_seconds
+                            provider_retry_delay_seconds = min(
+                                provider_retry_delay_seconds * 2,
+                                PROVIDER_RETRY_MAXIMUM_SECONDS,
+                            )
                             continue
-                        reconnect_start_time = None
+                        provider_retry_delay_seconds = PROVIDER_RETRY_INITIAL_SECONDS
+                        provider_retry_time = 0.0
+                        provider_unhealthy_start_time = None
                 else:
-                    reconnect_start_time = None
+                    provider_retry_delay_seconds = PROVIDER_RETRY_INITIAL_SECONDS
+                    provider_retry_time = 0.0
+                    provider_unhealthy_start_time = None
                     if (
                         self._dante_process is None
                         or self._dante_process.returncode is not None
                         or self._dnsmasq_process is None
                         or self._dnsmasq_process.returncode is not None
                     ):
-                        await self._user_plane_stop()
-                        await self._user_plane_start()
+                        await self._user_plane_stop(self._process_stop_deadline_get())
+                        connection_deadline = loop.time() + self.config.connection_attempt_timeout_seconds
+                        await self._user_plane_start(connection_deadline)
                     self._status_set(generation=generation, state=GatewayState.READY)
-                await asyncio.sleep(self.config.reconnect_poll_seconds)
+                retry_wait_seconds = max(0.0, provider_retry_time - loop.time())
+                await asyncio.sleep(
+                    min(DEFAULT_HEALTH_POLL_INTERVAL_SECONDS, retry_wait_seconds)
+                    if retry_wait_seconds
+                    else DEFAULT_HEALTH_POLL_INTERVAL_SECONDS
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            await self._user_plane_stop()
+            try:
+                await self._process_cleanup(self._process_stop_deadline_get())
+            except BaseException as cleanup_exc:
+                if isinstance(cleanup_exc, asyncio.CancelledError):
+                    raise
+                exc = GatewaySupervisorFailure(
+                    self._diagnostic_redact(f"gateway monitor cleanup failed: {cleanup_exc}")
+                )
+            if isinstance(exc, GatewaySupervisorFailure):
+                self._fatal_failure_set(exc)
             self._status_set(
                 generation=generation,
                 state=GatewayState.FAILED,
                 diagnostic=self._diagnostic_redact(str(exc)),
             )
+
+    def _fatal_failure_set(self, failure: BaseException) -> None:
+        """Publish the first fatal supervisor failure without exposing secret material."""
+
+        if self._fatal_failure_event.is_set():
+            return
+        self._fatal_failure_diagnostic = self._diagnostic_redact(str(failure))
+        self._fatal_failure_event.set()
+
+    @staticmethod
+    def _health_monitor_task_done(monitor_task: asyncio.Task[None]) -> None:
+        """Consume one completed monitor task exception after status persistence."""
+
+        if not monitor_task.cancelled():
+            monitor_task.exception()
 
     async def _health_server_is_ready(self) -> bool:
         """Return whether the loopback Gluetun health endpoint responds with HTTP 200."""
@@ -707,11 +812,15 @@ class GatewayRuntime:
             return False
         return status_line.startswith(b"HTTP/1.1 200") or status_line.startswith(b"HTTP/1.0 200")
 
-    async def _process_cleanup(self) -> None:
-        """Stop user egress before provider transport and remove all private runtime files."""
+    async def _process_cleanup(self, process_stop_deadline: float) -> None:
+        """Stop all process groups before one shared deadline and remove private files.
 
-        await self._user_plane_stop()
-        await self._process_stop(self._gluetun_process)
+        Args:
+            process_stop_deadline: Monotonic common graceful-stop deadline.
+        """
+
+        await self._user_plane_stop(process_stop_deadline)
+        await self._process_list_stop([self._gluetun_process], process_stop_deadline)
         self._gluetun_process = None
         self._gluetun_authentication_link_remove()
         if self._output_task_list:
@@ -766,31 +875,76 @@ class GatewayRuntime:
 
         return " | ".join(self._recent_diagnostic_list) or "no child diagnostic"
 
-    async def _process_stop(self, process: asyncio.subprocess.Process | None) -> None:
-        """Terminate one owned process group and prove its wrapper exited."""
+    async def _process_list_stop(
+        self,
+        process_list: list[asyncio.subprocess.Process | None],
+        process_stop_deadline: float,
+    ) -> None:
+        """Terminate process groups in parallel and prove every wrapper exits.
 
-        if process is None or process.returncode is not None:
+        Args:
+            process_list: Owned process wrappers to stop as one operation.
+            process_stop_deadline: Monotonic common graceful-stop deadline.
+        """
+
+        running_process_list = [
+            process for process in process_list if process is not None and process.returncode is None
+        ]
+        if not running_process_list:
             return
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(process.wait(), timeout=self.config.process_stop_timeout_seconds)
-        except TimeoutError:
+        for process in running_process_list:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                continue
+        wait_task_by_process_map = {
+            process: asyncio.create_task(process.wait())
+            for process in running_process_list
+            if process.returncode is None
+        }
+        if not wait_task_by_process_map:
+            return
+        graceful_wait_seconds = max(0.0, process_stop_deadline - asyncio.get_running_loop().time())
+        _, pending_task_set = await asyncio.wait(
+            set(wait_task_by_process_map.values()),
+            timeout=graceful_wait_seconds,
+        )
+        process_by_wait_task_map = {wait_task: process for process, wait_task in wait_task_by_process_map.items()}
+        for pending_task in pending_task_set:
+            try:
+                os.killpg(process_by_wait_task_map[pending_task].pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            await process.wait()
+        if pending_task_set:
+            _, unproved_task_set = await asyncio.wait(
+                pending_task_set,
+                timeout=PROCESS_EXIT_PROOF_TIMEOUT_SECONDS,
+            )
+            if unproved_task_set:
+                for unproved_task in unproved_task_set:
+                    unproved_task.cancel()
+                await asyncio.gather(*unproved_task_set, return_exceptions=True)
+                raise GatewaySupervisorFailure("owned process exit could not be proved after SIGKILL")
 
-    async def _socks_ready_wait(self) -> None:
-        """Wait for the SOCKS listener while proving its child remains alive."""
+    def _process_stop_deadline_get(self) -> float:
+        """Return one common monotonic graceful-stop deadline.
+
+        Returns:
+            Monotonic deadline shared by all owned process groups.
+        """
+
+        return asyncio.get_running_loop().time() + self.config.process_stop_timeout_seconds
+
+    async def _socks_ready_wait(self, connection_deadline: float) -> None:
+        """Wait for SOCKS while proving its child alive before one deadline.
+
+        Args:
+            connection_deadline: One monotonic provider-attempt deadline.
+        """
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + self.config.activation_timeout_seconds
         connect_host = "127.0.0.1" if self.config.socks_host == "0.0.0.0" else self.config.socks_host
-        while loop.time() < deadline:
+        while loop.time() < connection_deadline:
             if self._dante_process is None or self._dante_process.returncode is not None:
                 raise RuntimeError("Dante exited before SOCKS5 readiness")
             try:

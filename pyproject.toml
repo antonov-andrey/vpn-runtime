@@ -21,6 +21,9 @@ test = [
 vpn-runtime-control = "vpn_runtime.control:control_main"
 vpn-runtime-daemon = "vpn_runtime.control:daemon_main"
 vpn-runtime-readiness = "vpn_runtime.control:readiness_main"
+vpn-runtime-stable-proxy-control = "vpn_runtime.stable_proxy:stable_proxy_control_main"
+vpn-runtime-stable-proxy-daemon = "vpn_runtime.stable_proxy:stable_proxy_daemon_main"
+vpn-runtime-stable-proxy-readiness = "vpn_runtime.stable_proxy:stable_proxy_readiness_main"
 vpn-runtime-validate = "vpn_runtime.validation:main"
 
 [tool.setuptools.packages.find]

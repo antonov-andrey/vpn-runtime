@@ -4,8 +4,6 @@ import argparse
 import asyncio
 from datetime import datetime, timezone
 from enum import StrEnum
-import ipaddress
-import json
 import os
 from pathlib import Path
 import socket
@@ -32,7 +30,7 @@ class ValidationPhase(StrEnum):
     ACTIVATION = "activation"
     CLEANUP = "cleanup"
     FAIL_CLOSED = "fail_closed"
-    PROXY_HTTPS = "proxy_https"
+    NONCE_HTTPS = "nonce_https"
     STATIC = "static"
 
 
@@ -52,7 +50,7 @@ class ValidationReport(BaseModel):
     diagnostic: str
     failure_kind: str
     fail_closed_proven: bool
-    observed_exit_ip: str
+    nonce_proven: bool
     phase: ValidationPhase
     proxy_side_dns_proven: bool
     status: ValidationStatus
@@ -87,36 +85,6 @@ def _bytes_exact_receive(connection: socket.socket, byte_count: int) -> bytes:
             raise ConnectionError("SOCKS5 connection closed before the response completed")
         payload.extend(chunk)
     return bytes(payload)
-
-
-def _observed_exit_ip_get(body: bytes) -> str:
-    """Extract one valid observed client IP from a controlled endpoint response.
-
-    Args:
-        body: Bounded response body.
-
-    Returns:
-        Canonical observed IP address.
-    """
-
-    body_text = body.decode(encoding="utf-8").strip()
-    candidate_list: list[str] = []
-    try:
-        payload = json.loads(body_text)
-    except json.JSONDecodeError:
-        candidate_list.append(body_text)
-    else:
-        if isinstance(payload, dict):
-            for field_name in ["ip", "origin"]:
-                field_value = payload.get(field_name)
-                if isinstance(field_value, str):
-                    candidate_list.extend(value.strip() for value in field_value.split(","))
-    for candidate in candidate_list:
-        try:
-            return str(ipaddress.ip_address(candidate))
-        except ValueError:
-            continue
-    raise ValueError("controlled HTTPS endpoint did not return one valid observed IP address")
 
 
 def _socks_https_get(*, https_url: str, socks_host: str, socks_port: int, timeout_seconds: int) -> SocksHttpsResponse:
@@ -204,16 +172,24 @@ def _socks_https_get(*, https_url: str, socks_host: str, socks_port: int, timeou
 async def validation_run(
     *,
     config_root_path: Path,
+    connection_attempt_timeout_seconds: int = 180,
+    expected_nonce: bytes,
     https_url: str,
+    process_stop_timeout_seconds: int = 30,
     protocol: VpnProtocol,
+    provider_recovery_grace_seconds: int = 180,
     runtime_root_path: Path,
 ) -> ValidationReport:
     """Validate one exact snapshot through the same gateway used in production.
 
     Args:
         config_root_path: Exact immutable VPN source snapshot.
+        connection_attempt_timeout_seconds: One end-to-end provider-attempt deadline.
+        expected_nonce: Exact private nonce bytes expected from S3.
         https_url: Platform-owned HTTPS observation endpoint.
+        process_stop_timeout_seconds: Shared owned-process graceful-stop deadline.
         protocol: Exact protocol adapter.
+        provider_recovery_grace_seconds: Internal provider recovery grace.
         runtime_root_path: Private validation runtime root.
 
     Returns:
@@ -225,19 +201,24 @@ async def validation_run(
     gateway: GatewayRuntime | None = None
     clean_shutdown_proven = False
     fail_closed_proven = False
-    observed_exit_ip = ""
+    nonce_proven = False
     proxy_side_dns_proven = False
     try:
+        if not expected_nonce:
+            raise ValueError("private validation nonce must not be empty")
         gateway = GatewayRuntime(
             GatewayConfig(
+                connection_attempt_timeout_seconds=connection_attempt_timeout_seconds,
                 config_root_path=config_root_path,
+                process_stop_timeout_seconds=process_stop_timeout_seconds,
                 protocol=protocol,
+                provider_recovery_grace_seconds=provider_recovery_grace_seconds,
                 runtime_root_path=runtime_root_path,
             )
         )
         phase = ValidationPhase.ACTIVATION
         await gateway.activate(generation=1)
-        phase = ValidationPhase.PROXY_HTTPS
+        phase = ValidationPhase.NONCE_HTTPS
         https_response = await asyncio.to_thread(
             _socks_https_get,
             https_url=https_url,
@@ -247,11 +228,12 @@ async def validation_run(
         )
         if not 200 <= https_response.status_code < 300:
             raise ValueError(f"controlled HTTPS endpoint returned status {https_response.status_code}")
-        observed_exit_ip = _observed_exit_ip_get(https_response.body)
+        if https_response.body != expected_nonce:
+            raise ValueError("private HTTPS endpoint returned different nonce bytes")
+        nonce_proven = True
         proxy_side_dns_proven = True
         phase = ValidationPhase.FAIL_CLOSED
         await gateway.provider_interrupt_for_validation()
-        await asyncio.sleep(gateway.config.reconnect_poll_seconds * 2)
         try:
             await asyncio.to_thread(
                 _socks_https_get,
@@ -274,7 +256,7 @@ async def validation_run(
             diagnostic="",
             failure_kind="",
             fail_closed_proven=True,
-            observed_exit_ip=observed_exit_ip,
+            nonce_proven=True,
             phase=phase,
             proxy_side_dns_proven=True,
             status=ValidationStatus.PASSED,
@@ -292,7 +274,7 @@ async def validation_run(
                 if isinstance(exc, GatewayConfigurationError)
                 else ValidationFailureKind.INFRASTRUCTURE
             )
-        elif phase is ValidationPhase.PROXY_HTTPS:
+        elif phase is ValidationPhase.NONCE_HTTPS:
             failure_kind = ValidationFailureKind.INFRASTRUCTURE
         if gateway is not None:
             try:
@@ -307,7 +289,7 @@ async def validation_run(
             diagnostic=diagnostic,
             failure_kind=failure_kind,
             fail_closed_proven=fail_closed_proven,
-            observed_exit_ip=observed_exit_ip,
+            nonce_proven=nonce_proven,
             phase=phase,
             proxy_side_dns_proven=proxy_side_dns_proven,
             status=ValidationStatus.FAILED,
@@ -321,8 +303,12 @@ def _args_parse() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Validate one exact VPN snapshot with the production gateway image.")
     parser.add_argument("--config-root-path", required=True, type=Path)
-    parser.add_argument("--https-url", required=True)
+    parser.add_argument("--connection-attempt-timeout-seconds", default=180, type=int)
+    parser.add_argument("--expected-nonce-path", required=True, type=Path)
+    parser.add_argument("--https-url-path", required=True, type=Path)
+    parser.add_argument("--process-stop-timeout-seconds", default=30, type=int)
     parser.add_argument("--protocol", choices=list(VpnProtocol), required=True, type=VpnProtocol)
+    parser.add_argument("--provider-recovery-grace-seconds", default=180, type=int)
     parser.add_argument("--report-path", required=True, type=Path)
     parser.add_argument("--runtime-root-path", required=True, type=Path)
     return parser.parse_args()
@@ -332,7 +318,11 @@ def main() -> None:
     """Run validation, atomically persist its report, and fail for a rejected Version."""
 
     argument_by_name_map = vars(_args_parse())
+    expected_nonce_path = argument_by_name_map.pop("expected_nonce_path")
+    https_url_path = argument_by_name_map.pop("https_url_path")
     report_path = argument_by_name_map.pop("report_path")
+    argument_by_name_map["expected_nonce"] = expected_nonce_path.read_bytes()
+    argument_by_name_map["https_url"] = https_url_path.read_text(encoding="utf-8").strip()
     report = asyncio.run(validation_run(**argument_by_name_map))
     report_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     temporary_report_path = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")

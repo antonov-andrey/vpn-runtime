@@ -15,7 +15,25 @@ RUN python -m pip install --no-cache-dir --require-hashes \
     && python -m pip install --no-build-isolation --no-cache-dir --no-deps --prefix=/opt/vpn-runtime . \
     && rm -rf /build-lock
 
-FROM ${GLUETUN_IMAGE}
+FROM ${PYTHON_IMAGE} AS stable-proxy
+
+RUN addgroup -g 65532 stableproxy \
+    && adduser -D -H -s /sbin/nologin -u 65532 -G stableproxy stableproxy \
+    && mkdir -p /runtime \
+    && chown stableproxy:stableproxy /runtime \
+    && chmod 700 /runtime
+
+COPY --from=python-runtime /opt/vpn-runtime /opt/vpn-runtime
+COPY --from=python-runtime /usr/local /usr/local
+
+ENV PATH=/opt/vpn-runtime/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV PYTHONPATH=/opt/vpn-runtime/lib/python3.14/site-packages
+
+USER 65532:65532
+ENTRYPOINT ["vpn-runtime-stable-proxy-daemon"]
+CMD ["--help"]
+
+FROM ${GLUETUN_IMAGE} AS gateway
 
 RUN apk add --upgrade --no-cache \
         ca-certificates=20260611-r0 \

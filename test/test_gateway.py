@@ -4,13 +4,20 @@ import asyncio
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
 
 import pytest
 
 from vpn_runtime.config import VpnProtocol
-from vpn_runtime.gateway import GatewayConfig, GatewayRuntime, GatewayState
+import vpn_runtime.gateway as gateway_module
+from vpn_runtime.gateway import (
+    GatewayConfig,
+    GatewayRuntime,
+    GatewayState,
+    GatewaySupervisorFailure,
+)
 
 
 def _config_root_create(tmp_path: Path) -> Path:
@@ -88,6 +95,62 @@ def test_gateway_construction_is_prepared_and_opens_no_provider_connection(
     assert not (tmp_path / "runtime").exists()
 
 
+def test_gateway_config_uses_approved_runtime_defaults(tmp_path: Path) -> None:
+    """Keep connection, recovery, and graceful-stop defaults explicit and independent."""
+
+    gateway = _gateway_get(tmp_path)
+
+    assert gateway.config.connection_attempt_timeout_seconds == 180
+    assert gateway.config.provider_recovery_grace_seconds == 180
+    assert gateway.config.process_stop_timeout_seconds == 30
+    assert gateway_module.DEFAULT_HEALTH_POLL_INTERVAL_SECONDS == 5.0
+    assert gateway_module.PROVIDER_RETRY_INITIAL_SECONDS == 1.0
+    assert gateway_module.PROVIDER_RETRY_MAXIMUM_SECONDS == 300.0
+
+
+def test_gateway_activation_shares_one_provider_attempt_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Do not reset readiness time independently for provider, DNS, and SOCKS."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        deadline_list: list[float] = []
+        monitor_release = asyncio.Event()
+
+        async def provider_attempt_start() -> float:
+            """Return one deterministic provider-process start time."""
+
+            return 100.0
+
+        async def readiness_wait(connection_deadline: float) -> None:
+            """Capture the provider readiness deadline."""
+
+            deadline_list.append(connection_deadline)
+
+        async def user_plane_start(connection_deadline: float) -> None:
+            """Capture the same deadline inherited by DNS and SOCKS."""
+
+            deadline_list.append(connection_deadline)
+
+        async def health_monitor(generation: int) -> None:
+            """Keep the synthetic active generation alive until stop."""
+
+            await monitor_release.wait()
+
+        monkeypatch.setattr(gateway, "_provider_attempt_start", provider_attempt_start)
+        monkeypatch.setattr(gateway, "_gluetun_ready_wait", readiness_wait)
+        monkeypatch.setattr(gateway, "_user_plane_start", user_plane_start)
+        monkeypatch.setattr(gateway, "_health_monitor", health_monitor)
+
+        await gateway.activate(generation=1)
+        assert deadline_list == [280.0, 280.0]
+        await gateway.stop()
+
+    asyncio.run(run())
+
+
 def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -131,7 +194,7 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
         async def readiness_wait(timeout_seconds: int | None = None) -> None:
             """Represent immediate provider or SOCKS readiness."""
 
-        async def dnsmasq_start() -> None:
+        async def dnsmasq_start(connection_deadline: float) -> None:
             """Represent an immediately available tunnel-bound DNS forwarder."""
 
         async def health_monitor(generation: int) -> None:
@@ -276,9 +339,9 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", process_create)
         monkeypatch.setattr(subprocess, "run", command_run)
-        monkeypatch.setattr(gateway, "_dnsmasq_ready_wait", lambda: asyncio.sleep(0))
+        monkeypatch.setattr(gateway, "_dnsmasq_ready_wait", lambda connection_deadline: asyncio.sleep(0))
 
-        await gateway._dnsmasq_start()
+        await gateway._dnsmasq_start(asyncio.get_running_loop().time() + 10)
         gateway._proxy_dns_redirect_set(enabled=True)
 
         dnsmasq_command = process_command_list[0]
@@ -309,7 +372,7 @@ def test_gateway_dnsmasq_readiness_rejects_an_early_process_exit(tmp_path: Path)
         gateway._dnsmasq_process = ExitedProcess()
 
         with pytest.raises(RuntimeError, match="dnsmasq exited before target DNS readiness"):
-            await gateway._dnsmasq_ready_wait()
+            await gateway._dnsmasq_ready_wait(asyncio.get_running_loop().time() + 10)
 
     asyncio.run(run())
 
@@ -340,12 +403,12 @@ def test_gateway_health_monitor_restarts_the_complete_user_plane(
 
             return True
 
-        async def user_plane_stop() -> None:
+        async def user_plane_stop(process_stop_deadline: float) -> None:
             """Capture complete user-plane shutdown."""
 
             event_list.append("stop")
 
-        async def user_plane_start() -> None:
+        async def user_plane_start(connection_deadline: float) -> None:
             """Capture replacement after the shutdown boundary."""
 
             event_list.append("start")
@@ -439,3 +502,131 @@ def test_gateway_config_rejects_overlapping_source_and_runtime_roots(tmp_path: P
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=config_root_path / "runtime",
         )
+
+
+def test_gateway_process_groups_receive_parallel_term_then_bounded_kill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Signal every owned group before waiting and prove stubborn wrappers after SIGKILL."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        signal_call_list: list[tuple[int, signal.Signals]] = []
+
+        class StubbornProcess:
+            """Represent one wrapper that exits only after its process group receives SIGKILL."""
+
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+                self.returncode: int | None = None
+                self._exit_event = asyncio.Event()
+
+            async def wait(self) -> int:
+                """Wait until the synthetic kernel reaps this process."""
+
+                await self._exit_event.wait()
+                return self.returncode or 0
+
+        process_by_pid_map = {pid: StubbornProcess(pid) for pid in [101, 102]}
+
+        def process_group_signal(pid: int, signal_number: signal.Signals) -> None:
+            """Capture group ordering and reap a process after its kill fallback."""
+
+            signal_call_list.append((pid, signal_number))
+            if signal_number is signal.SIGKILL:
+                process = process_by_pid_map[pid]
+                process.returncode = -signal.SIGKILL
+                process._exit_event.set()
+
+        monkeypatch.setattr(os, "killpg", process_group_signal)
+
+        await gateway._process_list_stop(
+            list(process_by_pid_map.values()),
+            asyncio.get_running_loop().time(),
+        )
+
+        assert signal_call_list[:2] == [(101, signal.SIGTERM), (102, signal.SIGTERM)]
+        assert set(signal_call_list[2:]) == {(101, signal.SIGKILL), (102, signal.SIGKILL)}
+
+    asyncio.run(run())
+
+
+def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Do not create a second provider attempt when old ownership is not proven absent."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        provider_start_count = 0
+
+        async def user_plane_stop(process_stop_deadline: float) -> None:
+            """Represent a supervisor failure before old provider cleanup completes."""
+
+            raise RuntimeError("synthetic cleanup proof failure")
+
+        async def provider_attempt_start() -> float:
+            """Fail the test if restart opens another provider attempt."""
+
+            nonlocal provider_start_count
+            provider_start_count += 1
+            return 0.0
+
+        monkeypatch.setattr(gateway, "_user_plane_stop", user_plane_stop)
+        monkeypatch.setattr(gateway, "_provider_attempt_start", provider_attempt_start)
+
+        with pytest.raises(GatewaySupervisorFailure, match="cleanup could not be proven"):
+            await gateway._provider_attempt_restart()
+
+        assert provider_start_count == 0
+
+    asyncio.run(run())
+
+
+def test_gateway_monitor_publishes_fatal_cleanup_failure_for_pod_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Wake the daemon replacement boundary instead of retrying unsafe cleanup."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+
+        class ExitedProcess:
+            """Represent one provider that requires a replacement attempt."""
+
+            returncode = 1
+
+        async def health_server_is_ready() -> bool:
+            """Report the provider unavailable."""
+
+            return False
+
+        async def user_plane_stop(process_stop_deadline: float) -> None:
+            """Represent an already fail-closed user plane."""
+
+        async def provider_attempt_restart() -> None:
+            """Fail with the exact unproved-cleanup class."""
+
+            raise GatewaySupervisorFailure("owned process remains after SIGKILL")
+
+        async def process_cleanup(process_stop_deadline: float) -> None:
+            """Preserve the original fatal cause while attempting final cleanup."""
+
+        gateway._gluetun_process = ExitedProcess()
+        gateway._status_set(generation=12, state=GatewayState.READY)
+        monkeypatch.setattr(gateway, "_health_server_is_ready", health_server_is_ready)
+        monkeypatch.setattr(gateway, "_user_plane_stop", user_plane_stop)
+        monkeypatch.setattr(gateway, "_provider_attempt_restart", provider_attempt_restart)
+        monkeypatch.setattr(gateway, "_process_cleanup", process_cleanup)
+
+        await gateway._health_monitor(generation=12)
+
+        assert await asyncio.wait_for(gateway.fatal_failure_wait(), timeout=1) == (
+            "owned process remains after SIGKILL"
+        )
+        assert gateway.status.state is GatewayState.FAILED
+
+    asyncio.run(run())

@@ -29,6 +29,7 @@ class FakeGatewayRuntime:
         self.stop_count = 0
         self.status = self._status_get(0, GatewayState.PREPARED)
         self._status_callback = status_callback
+        self._fatal_failure_event = asyncio.Event()
         self.instance_list.append(self)
         self._notify()
 
@@ -48,6 +49,12 @@ class FakeGatewayRuntime:
         self.stop_count += 1
         self.status = self._status_get(self.status.generation, GatewayState.STOPPED)
         self._notify()
+
+    async def fatal_failure_wait(self) -> str:
+        """Wait for the synthetic fatal supervisor boundary."""
+
+        await self._fatal_failure_event.wait()
+        return "synthetic fatal failure"
 
     def _notify(self) -> None:
         """Invoke the real daemon persistence callback when configured."""

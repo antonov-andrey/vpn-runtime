@@ -40,14 +40,12 @@ If one required provider skill is unavailable, continue read-only discovery only
 
 ```text
 project/
-  .spec/
   .worktree/
-  worktree-bootstrap.toml
+  worktree-bootstrap.yaml
 ```
 
-- `.spec/` binds this repository's harness-neutral task-artifact root to the reusable semantics owned by `agent-workflows:goal-brainstorm`.
 - `.worktree/` is the task-worktree container whose reusable semantics are owned by `agent-workflows:goal-brainstorm`.
-- `worktree-bootstrap.toml` binds this repository's bootstrap resources to the reusable manifest contract owned by `agent-workflows:goal-brainstorm`.
+- `worktree-bootstrap.yaml` binds this repository's bootstrap resources to the reusable manifest contract owned by `agent-workflows:goal-brainstorm`; task artifacts themselves live only in `project-goals`.
 
 ## Scope
 - This repository owns reusable VPN gateway execution and exact VPN configuration validation.

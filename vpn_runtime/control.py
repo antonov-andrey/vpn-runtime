@@ -91,6 +91,11 @@ class ControlDaemon:
         await self._runtime.stop()
         self._socket_path.unlink(missing_ok=True)
 
+    async def fatal_failure_wait(self) -> str:
+        """Wait for a runtime failure that requires Kubernetes to replace this Pod."""
+
+        return await self._runtime.fatal_failure_wait()
+
     async def request_handle(self, request: ControlRequest) -> ControlResponse:
         """Apply one idempotent command under the generation fence.
 
@@ -256,9 +261,12 @@ def _daemon_args_parse() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Run one prepared generation-fenced VPN gateway daemon.")
     parser.add_argument("--activate-generation", default=None, type=int)
+    parser.add_argument("--connection-attempt-timeout-seconds", default=180, type=int)
     parser.add_argument("--config-root-path", required=True, type=Path)
     parser.add_argument("--control-socket-path", required=True, type=Path)
     parser.add_argument("--protocol", choices=list(VpnProtocol), required=True, type=VpnProtocol)
+    parser.add_argument("--process-stop-timeout-seconds", default=30, type=int)
+    parser.add_argument("--provider-recovery-grace-seconds", default=180, type=int)
     parser.add_argument("--runtime-root-path", required=True, type=Path)
     parser.add_argument("--state-path", required=True, type=Path)
     return parser.parse_args()
@@ -315,9 +323,20 @@ def daemon_main() -> None:
         loop = asyncio.get_running_loop()
         for signal_number in [signal.SIGINT, signal.SIGTERM]:
             loop.add_signal_handler(signal_number, stop_event.set)
+        stop_task = asyncio.create_task(stop_event.wait())
+        fatal_failure_task = asyncio.create_task(daemon.fatal_failure_wait())
         try:
-            await stop_event.wait()
+            completed_task_set, _ = await asyncio.wait(
+                {stop_task, fatal_failure_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if fatal_failure_task in completed_task_set:
+                raise RuntimeError(await fatal_failure_task)
         finally:
+            for task in [stop_task, fatal_failure_task]:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stop_task, fatal_failure_task, return_exceptions=True)
             await daemon.close()
 
     asyncio.run(run())
