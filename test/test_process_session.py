@@ -7,7 +7,7 @@ import signal
 
 import pytest
 
-from vpn_runtime.process_session import ProcessSessionSupervisor
+from vpn_runtime.process_session import ProcessSessionError, ProcessSessionSupervisor
 
 
 class _ExitedProcess:
@@ -85,3 +85,54 @@ def test_process_session_ignores_resource_free_descendant_zombie(tmp_path: Path)
     supervisor.register(process)
 
     assert not supervisor.have_processes([process])
+
+
+def test_process_session_ignores_process_that_disappears_while_stat_is_read(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Accept the normal procfs race after one enumerated process exits."""
+
+    proc_root_path = tmp_path / "proc"
+    proc_root_path.mkdir()
+    disappearing_process_path = proc_root_path / "302"
+    disappearing_process_path.mkdir()
+    process = _ExitedProcess(301)
+    supervisor = ProcessSessionSupervisor(proc_root_path=proc_root_path)
+    supervisor.register(process)
+    original_read_text = Path.read_text
+
+    def stat_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == disappearing_process_path / "stat":
+            raise ProcessLookupError("process exited during procfs inspection")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", stat_read)
+
+    assert not supervisor.have_processes([process])
+
+
+def test_process_session_rejects_unreadable_process_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Keep inspection failures fail-closed when the process did not disappear."""
+
+    proc_root_path = tmp_path / "proc"
+    proc_root_path.mkdir()
+    unreadable_process_path = proc_root_path / "402"
+    unreadable_process_path.mkdir()
+    process = _ExitedProcess(401)
+    supervisor = ProcessSessionSupervisor(proc_root_path=proc_root_path)
+    supervisor.register(process)
+    original_read_text = Path.read_text
+
+    def stat_read(path: Path, *args: object, **kwargs: object) -> str:
+        if path == unreadable_process_path / "stat":
+            raise PermissionError("process metadata is unreadable")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", stat_read)
+
+    with pytest.raises(ProcessSessionError, match="membership could not be inspected"):
+        supervisor.have_processes([process])

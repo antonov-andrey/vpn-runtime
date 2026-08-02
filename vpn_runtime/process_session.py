@@ -161,9 +161,9 @@ class ProcessSessionSupervisor:
                 continue
             try:
                 stat_text = process_path.joinpath("stat").read_text(encoding="utf-8")
-            except FileNotFoundError:
-                continue
             except OSError as exc:
+                if isinstance(exc, (FileNotFoundError, ProcessLookupError)):
+                    continue
                 raise ProcessSessionError("process-session membership could not be inspected") from exc
             command_end_index = stat_text.rfind(")")
             if command_end_index < 0:
