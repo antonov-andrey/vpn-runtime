@@ -22,7 +22,9 @@ def test_dockerfile_requires_release_owned_bases_and_pins_gateway_packages() -> 
     assert "dnsmasq=2.91-r1" in dockerfile_text
     assert "adduser -D -H -s /sbin/nologin -u 1001 -G vpndns vpndns" in dockerfile_text
     assert "chown root:vpnproxy /runtime" in dockerfile_text
+    assert "chown root:root /tmp/gluetun" in dockerfile_text
     assert "chmod 710 /runtime" in dockerfile_text
+    assert "chmod 700 /tmp/gluetun" in dockerfile_text
     assert 'ENTRYPOINT ["/sbin/tini", "--"]' in dockerfile_text
 
 

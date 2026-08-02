@@ -59,9 +59,11 @@ RUN apk add --upgrade --no-cache \
     && adduser -D -H -s /sbin/nologin -u 1000 -G vpnproxy vpnproxy \
     && addgroup -g 1001 vpndns \
     && adduser -D -H -s /sbin/nologin -u 1001 -G vpndns vpndns \
-    && mkdir -p /input /runtime \
+    && mkdir -p /input /runtime /tmp/gluetun \
     && chown root:vpnproxy /runtime \
-    && chmod 710 /runtime
+    && chown root:root /tmp/gluetun \
+    && chmod 710 /runtime \
+    && chmod 700 /tmp/gluetun
 
 COPY --from=python-runtime /usr/local /usr/local
 COPY --from=python-runtime /opt/vpn-runtime /opt/vpn-runtime
