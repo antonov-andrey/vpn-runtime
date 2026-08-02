@@ -179,6 +179,7 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
         class ExitedProcess:
             """Represent one already-exited child after startup capture."""
 
+            pid = 10001
             returncode = 0
             stdout = EmptyOutput()
 
@@ -313,6 +314,7 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
         class RunningProcess:
             """Represent one running DNS forwarder."""
 
+            pid = 10002
             returncode = None
             stdout = EmptyOutput()
 
@@ -504,11 +506,11 @@ def test_gateway_config_rejects_overlapping_source_and_runtime_roots(tmp_path: P
         )
 
 
-def test_gateway_process_groups_receive_parallel_term_then_bounded_kill(
+def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Signal every owned group before waiting and prove stubborn wrappers after SIGKILL."""
+    """Signal every owned session before waiting and prove stubborn wrappers after SIGKILL."""
 
     async def run() -> None:
         gateway = _gateway_get(tmp_path)
@@ -530,8 +532,8 @@ def test_gateway_process_groups_receive_parallel_term_then_bounded_kill(
 
         process_by_pid_map = {pid: StubbornProcess(pid) for pid in [101, 102]}
 
-        def process_group_signal(pid: int, signal_number: signal.Signals) -> None:
-            """Capture group ordering and reap a process after its kill fallback."""
+        def process_signal(pid: int, signal_number: signal.Signals) -> None:
+            """Capture session-member ordering and reap a process after its kill fallback."""
 
             signal_call_list.append((pid, signal_number))
             if signal_number is signal.SIGKILL:
@@ -539,14 +541,19 @@ def test_gateway_process_groups_receive_parallel_term_then_bounded_kill(
                 process.returncode = -signal.SIGKILL
                 process._exit_event.set()
 
-        monkeypatch.setattr(os, "killpg", process_group_signal)
+        monkeypatch.setattr(os, "kill", process_signal)
+        monkeypatch.setattr(
+            gateway._process_session_supervisor,
+            "_session_member_pid_list_get",
+            lambda session_id: [session_id] if process_by_pid_map[session_id].returncode is None else [],
+        )
 
         await gateway._process_list_stop(
             list(process_by_pid_map.values()),
             asyncio.get_running_loop().time(),
         )
 
-        assert signal_call_list[:2] == [(101, signal.SIGTERM), (102, signal.SIGTERM)]
+        assert set(signal_call_list[:2]) == {(101, signal.SIGTERM), (102, signal.SIGTERM)}
         assert set(signal_call_list[2:]) == {(101, signal.SIGKILL), (102, signal.SIGKILL)}
 
     asyncio.run(run())

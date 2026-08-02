@@ -9,7 +9,6 @@ import json
 import os
 from pathlib import Path
 import shutil
-import signal
 import socket
 import subprocess
 from typing import Self
@@ -17,6 +16,7 @@ from typing import Self
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vpn_runtime.config import OpenvpnAttempt, OpenvpnSnapshot, VpnProtocol
+from vpn_runtime.process_session import ProcessSessionError, ProcessSessionSupervisor
 
 DEFAULT_DANTE_EXECUTABLE_PATH = Path("/usr/sbin/sockd")
 DEFAULT_DNSMASQ_EXECUTABLE_PATH = Path("/usr/sbin/dnsmasq")
@@ -31,7 +31,6 @@ DEFAULT_SYSTEM_RESOLV_CONF_PATH = Path("/etc/resolv.conf")
 PROXY_DNS_UPSTREAM_IP_LIST = ["1.1.1.1", "1.0.0.1"]
 PROVIDER_RETRY_INITIAL_SECONDS = 1.0
 PROVIDER_RETRY_MAXIMUM_SECONDS = 300.0
-PROCESS_EXIT_PROOF_TIMEOUT_SECONDS = 5.0
 VPN_PROXY_GID = 1000
 VPN_PROXY_UID = 1000
 
@@ -154,6 +153,7 @@ class GatewayRuntime:
         self._output_task_list: list[asyncio.Task[None]] = []
         self._provider_attempt_number = 0
         self._provider_attempt_root_path: Path | None = None
+        self._process_session_supervisor = ProcessSessionSupervisor()
         self._proxy_dns_redirect_is_owned = False
         self._recent_diagnostic_list: list[str] = []
         self._snapshot = OpenvpnSnapshot.from_root(config.config_root_path)
@@ -260,13 +260,8 @@ class GatewayRuntime:
     def have_owned_processes(self) -> bool:
         """Return whether one provider or SOCKS child is still running."""
 
-        return any(
-            process is not None and process.returncode is None
-            for process in [
-                self._dante_process,
-                self._dnsmasq_process,
-                self._gluetun_process,
-            ]
+        return self._process_session_supervisor.have_processes(
+            [self._dante_process, self._dnsmasq_process, self._gluetun_process]
         )
 
     async def provider_interrupt_for_validation(self) -> None:
@@ -572,6 +567,7 @@ class GatewayRuntime:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        self._process_session_supervisor.register(self._dante_process)
         self._output_task_list.append(asyncio.create_task(self._process_output_forward("dante", self._dante_process)))
 
     async def _dnsmasq_start(self, connection_deadline: float) -> None:
@@ -598,6 +594,7 @@ class GatewayRuntime:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        self._process_session_supervisor.register(self._dnsmasq_process)
         self._output_task_list.append(
             asyncio.create_task(self._process_output_forward("dnsmasq", self._dnsmasq_process))
         )
@@ -692,6 +689,7 @@ class GatewayRuntime:
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=True,
         )
+        self._process_session_supervisor.register(self._gluetun_process)
         self._output_task_list.append(
             asyncio.create_task(self._process_output_forward("gluetun", self._gluetun_process))
         )
@@ -887,44 +885,10 @@ class GatewayRuntime:
             process_stop_deadline: Monotonic common graceful-stop deadline.
         """
 
-        running_process_list = [
-            process for process in process_list if process is not None and process.returncode is None
-        ]
-        if not running_process_list:
-            return
-        for process in running_process_list:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                continue
-        wait_task_by_process_map = {
-            process: asyncio.create_task(process.wait())
-            for process in running_process_list
-            if process.returncode is None
-        }
-        if not wait_task_by_process_map:
-            return
-        graceful_wait_seconds = max(0.0, process_stop_deadline - asyncio.get_running_loop().time())
-        _, pending_task_set = await asyncio.wait(
-            set(wait_task_by_process_map.values()),
-            timeout=graceful_wait_seconds,
-        )
-        process_by_wait_task_map = {wait_task: process for process, wait_task in wait_task_by_process_map.items()}
-        for pending_task in pending_task_set:
-            try:
-                os.killpg(process_by_wait_task_map[pending_task].pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if pending_task_set:
-            _, unproved_task_set = await asyncio.wait(
-                pending_task_set,
-                timeout=PROCESS_EXIT_PROOF_TIMEOUT_SECONDS,
-            )
-            if unproved_task_set:
-                for unproved_task in unproved_task_set:
-                    unproved_task.cancel()
-                await asyncio.gather(*unproved_task_set, return_exceptions=True)
-                raise GatewaySupervisorFailure("owned process exit could not be proved after SIGKILL")
+        try:
+            await self._process_session_supervisor.stop(process_list, process_stop_deadline)
+        except ProcessSessionError as exc:
+            raise GatewaySupervisorFailure(str(exc)) from exc
 
     def _process_stop_deadline_get(self) -> float:
         """Return one common monotonic graceful-stop deadline.
