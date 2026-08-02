@@ -85,11 +85,15 @@ async def stable_proxy_switch_restart_get(*, runtime_root_path: Path) -> Measure
 
 async def _fail_closed_prove(*, port: int) -> None:
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
-    writer.write(b"blocked")
-    await writer.drain()
-    payload = await asyncio.wait_for(reader.read(1), timeout=2)
-    writer.close()
-    await writer.wait_closed()
+    try:
+        writer.write(b"blocked")
+        await writer.drain()
+        payload = await asyncio.wait_for(reader.read(1), timeout=2)
+    except BrokenPipeError, ConnectionResetError:
+        payload = b""
+    finally:
+        writer.close()
+        await asyncio.gather(writer.wait_closed(), return_exceptions=True)
     if payload:
         raise RuntimeError("disabled stable proxy forwarded traffic")
 
