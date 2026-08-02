@@ -11,17 +11,37 @@ from runtime_measurement.gateway import GatewayMeasurement
 from runtime_measurement.model import RuntimeMeasurementReport
 from runtime_measurement.process import forced_process_stop_get
 from runtime_measurement.stable_proxy import stable_proxy_switch_restart_get
+from vpn_runtime.timing import (
+    CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+    PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+    PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+    connection_attempt_timeout_seconds_parse,
+    process_stop_timeout_seconds_parse,
+    provider_recovery_grace_seconds_parse,
+)
 
 
 def _args_parse() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Measure the production VPN runtime on one real target node.")
     parser.add_argument("--config-root-path", required=True, type=Path)
-    parser.add_argument("--connection-attempt-timeout-seconds", default=180, type=int)
+    parser.add_argument(
+        "--connection-attempt-timeout-seconds",
+        default=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+        type=connection_attempt_timeout_seconds_parse,
+    )
     parser.add_argument("--expected-nonce-path", required=True, type=Path)
     parser.add_argument("--https-url-path", required=True, type=Path)
     parser.add_argument("--image-identity", required=True)
-    parser.add_argument("--process-stop-timeout-seconds", default=30, type=int)
-    parser.add_argument("--provider-recovery-grace-seconds", default=180, type=int)
+    parser.add_argument(
+        "--process-stop-timeout-seconds",
+        default=PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+        type=process_stop_timeout_seconds_parse,
+    )
+    parser.add_argument(
+        "--provider-recovery-grace-seconds",
+        default=PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+        type=provider_recovery_grace_seconds_parse,
+    )
     parser.add_argument("--report-path", required=True, type=Path)
     parser.add_argument("--round-count", default=3, type=int)
     parser.add_argument("--runtime-root-path", required=True, type=Path)

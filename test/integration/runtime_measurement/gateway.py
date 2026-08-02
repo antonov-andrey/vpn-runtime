@@ -119,9 +119,9 @@ class GatewayMeasurement:
 
         runtime = gateway_get(
             config_root_path=self._config_root_path,
-            connection_attempt_timeout_seconds=15,
+            connection_attempt_timeout_seconds=self._connection_attempt_timeout_seconds,
             process_stop_timeout_seconds=self._process_stop_timeout_seconds,
-            provider_recovery_grace_seconds=5,
+            provider_recovery_grace_seconds=self._provider_recovery_grace_seconds,
             runtime_root_path=self._scenario_root_get("dns-change-replacement"),
         )
         original_resolver = runtime._remote_ip_by_hostname_map_get
@@ -220,10 +220,23 @@ class GatewayMeasurement:
 
     @staticmethod
     async def _socks_failure_prove() -> bool:
+        """Prove that SOCKS cannot establish an upstream TCP connection."""
+
+        writer: asyncio.StreamWriter | None = None
         try:
-            _, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 1080), timeout=3)
-        except OSError, TimeoutError:
+            reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 1080), timeout=3)
+            writer.write(b"\x05\x01\x00")
+            await writer.drain()
+            method_response = await asyncio.wait_for(reader.readexactly(2), timeout=3)
+            if method_response != b"\x05\x00":
+                return True
+            writer.write(b"\x05\x01\x00\x01\x01\x01\x01\x01\x01\xbb")
+            await writer.drain()
+            connect_response = await asyncio.wait_for(reader.readexactly(4), timeout=3)
+            return connect_response[1] != 0
+        except OSError, TimeoutError, asyncio.IncompleteReadError:
             return True
-        writer.close()
-        await writer.wait_closed()
-        return False
+        finally:
+            if writer is not None:
+                writer.close()
+                await writer.wait_closed()

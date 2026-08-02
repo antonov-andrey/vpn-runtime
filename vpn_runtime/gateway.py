@@ -17,20 +17,32 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from vpn_runtime.config import OpenvpnAttempt, OpenvpnSnapshot, VpnProtocol
 from vpn_runtime.process_session import ProcessSessionError, ProcessSessionSupervisor
+from vpn_runtime.timing import (
+    CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+    CONNECTION_ATTEMPT_TIMEOUT_SECONDS_MAXIMUM,
+    CONNECTION_ATTEMPT_TIMEOUT_SECONDS_MINIMUM,
+    HEALTH_POLL_INTERVAL_SECONDS,
+    PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+    PROCESS_STOP_TIMEOUT_SECONDS_MAXIMUM,
+    PROCESS_STOP_TIMEOUT_SECONDS_MINIMUM,
+    PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+    PROVIDER_RECOVERY_GRACE_SECONDS_MAXIMUM,
+    PROVIDER_RECOVERY_GRACE_SECONDS_MINIMUM,
+    PROVIDER_RETRY_INITIAL_SECONDS,
+    PROVIDER_RETRY_MAXIMUM_SECONDS,
+)
 
 DEFAULT_DANTE_EXECUTABLE_PATH = Path("/usr/sbin/sockd")
 DEFAULT_DNSMASQ_EXECUTABLE_PATH = Path("/usr/sbin/dnsmasq")
 DEFAULT_GLUETUN_AUTHENTICATION_PATH = Path("/etc/openvpn/auth.conf")
 DEFAULT_GLUETUN_EXECUTABLE_PATH = Path("/gluetun-entrypoint")
 DEFAULT_HEALTH_PORT = 9999
-DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = 5.0
+DEFAULT_HEALTH_POLL_INTERVAL_SECONDS = HEALTH_POLL_INTERVAL_SECONDS
 DEFAULT_IPTABLES_EXECUTABLE_PATH = Path("/usr/sbin/iptables")
 DEFAULT_PROXY_DNS_PORT = 5353
 DEFAULT_SOCKS_PORT = 1080
 DEFAULT_SYSTEM_RESOLV_CONF_PATH = Path("/etc/resolv.conf")
 PROXY_DNS_UPSTREAM_IP_LIST = ["1.1.1.1", "1.0.0.1"]
-PROVIDER_RETRY_INITIAL_SECONDS = 1.0
-PROVIDER_RETRY_MAXIMUM_SECONDS = 300.0
 VPN_PROXY_GID = 1000
 VPN_PROXY_UID = 1000
 
@@ -89,7 +101,11 @@ class GatewayConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True, validate_default=True)
 
-    connection_attempt_timeout_seconds: int = Field(default=180, ge=1)
+    connection_attempt_timeout_seconds: int = Field(
+        default=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+        ge=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_MINIMUM,
+        le=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_MAXIMUM,
+    )
     config_root_path: Path
     dante_executable_path: Path = DEFAULT_DANTE_EXECUTABLE_PATH
     dnsmasq_executable_path: Path = DEFAULT_DNSMASQ_EXECUTABLE_PATH
@@ -97,9 +113,17 @@ class GatewayConfig(BaseModel):
     gluetun_executable_path: Path = DEFAULT_GLUETUN_EXECUTABLE_PATH
     health_port: int = Field(default=DEFAULT_HEALTH_PORT, ge=1, le=65535)
     iptables_executable_path: Path = DEFAULT_IPTABLES_EXECUTABLE_PATH
-    process_stop_timeout_seconds: int = Field(default=30, ge=1)
+    process_stop_timeout_seconds: int = Field(
+        default=PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+        ge=PROCESS_STOP_TIMEOUT_SECONDS_MINIMUM,
+        le=PROCESS_STOP_TIMEOUT_SECONDS_MAXIMUM,
+    )
     protocol: VpnProtocol
-    provider_recovery_grace_seconds: int = Field(default=180, ge=1)
+    provider_recovery_grace_seconds: int = Field(
+        default=PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+        ge=PROVIDER_RECOVERY_GRACE_SECONDS_MINIMUM,
+        le=PROVIDER_RECOVERY_GRACE_SECONDS_MAXIMUM,
+    )
     proxy_dns_port: int = Field(default=DEFAULT_PROXY_DNS_PORT, ge=1024, le=65535)
     runtime_root_path: Path
     socks_host: str = "0.0.0.0"
@@ -811,7 +835,7 @@ class GatewayRuntime:
         return status_line.startswith(b"HTTP/1.1 200") or status_line.startswith(b"HTTP/1.0 200")
 
     async def _process_cleanup(self, process_stop_deadline: float) -> None:
-        """Stop all process groups before one shared deadline and remove private files.
+        """Stop all process sessions before one shared deadline and remove private files.
 
         Args:
             process_stop_deadline: Monotonic common graceful-stop deadline.
@@ -878,7 +902,7 @@ class GatewayRuntime:
         process_list: list[asyncio.subprocess.Process | None],
         process_stop_deadline: float,
     ) -> None:
-        """Terminate process groups in parallel and prove every wrapper exits.
+        """Terminate process sessions in parallel and prove every owned descendant exits.
 
         Args:
             process_list: Owned process wrappers to stop as one operation.
@@ -894,7 +918,7 @@ class GatewayRuntime:
         """Return one common monotonic graceful-stop deadline.
 
         Returns:
-            Monotonic deadline shared by all owned process groups.
+            Monotonic deadline shared by all owned process sessions.
         """
 
         return asyncio.get_running_loop().time() + self.config.process_stop_timeout_seconds

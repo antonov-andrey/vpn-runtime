@@ -14,6 +14,14 @@ from pydantic import BaseModel, ConfigDict
 
 from vpn_runtime.config import VpnProtocol
 from vpn_runtime.gateway import GatewayConfig, GatewayConfigurationError, GatewayRuntime
+from vpn_runtime.timing import (
+    CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+    PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+    PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+    connection_attempt_timeout_seconds_parse,
+    process_stop_timeout_seconds_parse,
+    provider_recovery_grace_seconds_parse,
+)
 
 
 class ValidationFailureKind(StrEnum):
@@ -303,12 +311,24 @@ def _args_parse() -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description="Validate one exact VPN snapshot with the production gateway image.")
     parser.add_argument("--config-root-path", required=True, type=Path)
-    parser.add_argument("--connection-attempt-timeout-seconds", default=180, type=int)
+    parser.add_argument(
+        "--connection-attempt-timeout-seconds",
+        default=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
+        type=connection_attempt_timeout_seconds_parse,
+    )
     parser.add_argument("--expected-nonce-path", required=True, type=Path)
     parser.add_argument("--https-url-path", required=True, type=Path)
-    parser.add_argument("--process-stop-timeout-seconds", default=30, type=int)
+    parser.add_argument(
+        "--process-stop-timeout-seconds",
+        default=PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
+        type=process_stop_timeout_seconds_parse,
+    )
     parser.add_argument("--protocol", choices=list(VpnProtocol), required=True, type=VpnProtocol)
-    parser.add_argument("--provider-recovery-grace-seconds", default=180, type=int)
+    parser.add_argument(
+        "--provider-recovery-grace-seconds",
+        default=PROVIDER_RECOVERY_GRACE_SECONDS_DEFAULT,
+        type=provider_recovery_grace_seconds_parse,
+    )
     parser.add_argument("--report-path", required=True, type=Path)
     parser.add_argument("--runtime-root-path", required=True, type=Path)
     return parser.parse_args()

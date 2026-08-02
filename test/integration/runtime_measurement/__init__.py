@@ -1,1 +1,1 @@
-"""Real ARM64 VPN runtime measurement package."""
+"""Target-only measurement package with explicit private fault-injection access."""

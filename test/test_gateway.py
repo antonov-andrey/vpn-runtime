@@ -517,7 +517,7 @@ def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
         signal_call_list: list[tuple[int, signal.Signals]] = []
 
         class StubbornProcess:
-            """Represent one wrapper that exits only after its process group receives SIGKILL."""
+            """Represent one wrapper that exits only after its process session receives SIGKILL."""
 
             def __init__(self, pid: int) -> None:
                 self.pid = pid
