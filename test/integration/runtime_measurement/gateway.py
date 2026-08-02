@@ -11,6 +11,10 @@ import time
 from typing import Any
 
 from vpn_runtime.gateway import GatewayConfigurationError, GatewayRuntime, GatewayState
+from vpn_runtime.timing import (
+    HEALTH_POLL_INTERVAL_SECONDS,
+    PROVIDER_RETRY_INITIAL_SECONDS,
+)
 
 from runtime_measurement.common import gateway_get, nonce_probe, runtime_is_ready, state_wait
 from runtime_measurement.model import MeasurementSample
@@ -93,12 +97,19 @@ class GatewayMeasurement:
             t_start = time.monotonic()
             await state_wait(
                 predicate=lambda: runtime.status.state is GatewayState.RECONNECTING,
-                timeout_seconds=90,
+                timeout_seconds=(self._provider_recovery_grace_seconds + 2 * HEALTH_POLL_INTERVAL_SECONDS),
             )
             fail_closed_proven = await self._socks_failure_prove()
             self._iptables_run(["-D", *rule_argument_list])
             rule_is_installed = False
-            await state_wait(predicate=lambda: runtime_is_ready(runtime), timeout_seconds=90)
+            await state_wait(
+                predicate=lambda: runtime_is_ready(runtime),
+                timeout_seconds=(
+                    self._provider_recovery_grace_seconds
+                    + self._connection_attempt_timeout_seconds
+                    + 2 * HEALTH_POLL_INTERVAL_SECONDS
+                ),
+            )
             duration_seconds = time.monotonic() - t_start
             await nonce_probe(expected_nonce=self._expected_nonce, https_url=self._https_url)
             return MeasurementSample(
@@ -144,7 +155,7 @@ class GatewayMeasurement:
             os.killpg(gluetun_process.pid, signal.SIGKILL)
             await state_wait(
                 predicate=lambda: resolver_call_count >= 3 and runtime_is_ready(runtime),
-                timeout_seconds=90,
+                timeout_seconds=self._attempt_replacement_observation_timeout_seconds_get(),
             )
             duration_seconds = time.monotonic() - t_start
             await nonce_probe(expected_nonce=self._expected_nonce, https_url=self._https_url)
@@ -217,6 +228,16 @@ class GatewayMeasurement:
 
     def _scenario_root_get(self, suffix: str) -> Path:
         return self._runtime_root_path / suffix
+
+    def _attempt_replacement_observation_timeout_seconds_get(self) -> float:
+        """Cover one unreachable attempt and the following successful attempt."""
+
+        return (
+            2 * self._connection_attempt_timeout_seconds
+            + 2 * self._process_stop_timeout_seconds
+            + 3 * HEALTH_POLL_INTERVAL_SECONDS
+            + 3 * PROVIDER_RETRY_INITIAL_SECONDS
+        )
 
     @staticmethod
     async def _socks_failure_prove() -> bool:
