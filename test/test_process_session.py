@@ -23,13 +23,19 @@ class _ExitedProcess:
         return self.returncode
 
 
-def _proc_stat_write(proc_root_path: Path, *, pid: int, session_id: int) -> None:
+def _proc_stat_write(
+    proc_root_path: Path,
+    *,
+    pid: int,
+    session_id: int,
+    state: str = "S",
+) -> None:
     """Write the minimum Linux stat shape consumed by the supervisor."""
 
     process_root_path = proc_root_path / str(pid)
     process_root_path.mkdir()
     process_root_path.joinpath("stat").write_text(
-        f"{pid} (openvpn worker) S 1 {pid} {session_id} 0\n",
+        f"{pid} (openvpn worker) {state} 1 {pid} {session_id} 0\n",
         encoding="utf-8",
     )
 
@@ -65,3 +71,17 @@ def test_process_session_stop_terminates_orphan_after_direct_leader_exit(
         assert not supervisor.have_processes([process])
 
     asyncio.run(run())
+
+
+def test_process_session_ignores_resource_free_descendant_zombie(tmp_path: Path) -> None:
+    """Require wrapper reaping but do not wait on a descendant that has already exited."""
+
+    proc_root_path = tmp_path / "proc"
+    proc_root_path.mkdir()
+    leader_pid = 301
+    _proc_stat_write(proc_root_path, pid=302, session_id=leader_pid, state="Z")
+    process = _ExitedProcess(leader_pid)
+    supervisor = ProcessSessionSupervisor(proc_root_path=proc_root_path)
+    supervisor.register(process)
+
+    assert not supervisor.have_processes([process])

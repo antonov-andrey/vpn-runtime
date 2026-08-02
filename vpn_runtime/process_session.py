@@ -171,6 +171,8 @@ class ProcessSessionSupervisor:
             stat_field_list = stat_text[command_end_index + 2 :].split()
             if len(stat_field_list) < 4:
                 raise ProcessSessionError("kernel process metadata has an invalid shape")
+            if stat_field_list[0] == "Z":
+                continue
             try:
                 process_session_id = int(stat_field_list[3])
             except ValueError as exc:
