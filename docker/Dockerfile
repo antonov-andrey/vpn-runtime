@@ -1,3 +1,5 @@
+# check=skip=InvalidDefaultArgInFrom
+
 ARG GLUETUN_IMAGE
 ARG PYTHON_IMAGE
 
