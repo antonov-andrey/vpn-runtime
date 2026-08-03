@@ -8,7 +8,12 @@ from pathlib import Path
 import pytest
 
 from vpn_runtime.config import VpnProtocol
-from vpn_runtime.gateway import GatewayConfigurationError, GatewayState, GatewayStatus
+from vpn_runtime.gateway import (
+    GatewayConfigurationError,
+    GatewayState,
+    GatewayStatus,
+    GatewaySupervisorFailure,
+)
 from vpn_runtime.validation import (
     SocksHttpsResponse,
     ValidationFailureKind,
@@ -61,12 +66,14 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     from vpn_runtime import validation
 
     call_count = 0
+    timeout_second_list: list[int] = []
 
     def socks_https_get(**kwargs: object) -> SocksHttpsResponse:
         """Return exact nonce once, then fail after provider interruption."""
 
         nonlocal call_count
         call_count += 1
+        timeout_second_list.append(int(kwargs["timeout_seconds"]))
         if call_count == 1:
             return SocksHttpsResponse(body=b"private-nonce", status_code=200)
         raise ConnectionError("provider transport unavailable")
@@ -78,7 +85,9 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
         validation_run(
             config_root_path=tmp_path / "config",
             expected_nonce=b"private-nonce",
+            fail_closed_probe_timeout_seconds=7,
             https_url="https://validation.example.test/nonce",
+            nonce_https_timeout_seconds=23,
             protocol=VpnProtocol.OPENVPN,
             runtime_root_path=tmp_path / "runtime",
         )
@@ -91,6 +100,35 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     assert report.proxy_side_dns_proven
     assert report.fail_closed_proven
     assert report.clean_shutdown_proven
+    assert timeout_second_list == [23, 7]
+
+
+@pytest.mark.parametrize("field_name", ["fail_closed_probe_timeout_seconds", "nonce_https_timeout_seconds"])
+def test_validation_rejects_nonpositive_probe_timeout(
+    field_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Reject an invalid platform probe deadline before gateway activation."""
+
+    from vpn_runtime import validation
+
+    monkeypatch.setattr(validation, "GatewayRuntime", FakeValidationGateway)
+    argument_by_name_map = {
+        "config_root_path": tmp_path / "config",
+        "expected_nonce": b"private-nonce",
+        "https_url": "https://validation.example.test/nonce",
+        "protocol": VpnProtocol.OPENVPN,
+        "runtime_root_path": tmp_path / "runtime",
+        field_name: 0,
+    }
+
+    report = asyncio.run(validation_run(**argument_by_name_map))
+
+    assert report.status is ValidationStatus.FAILED
+    assert report.phase is ValidationPhase.STATIC
+    assert report.failure_kind == ValidationFailureKind.CONFIGURATION
+    assert report.diagnostic == "validation probe timeouts must be positive"
 
 
 def test_validation_classifies_static_rejection_as_deterministic_configuration_failure(
@@ -196,3 +234,86 @@ def test_validation_classifies_proven_provider_rejection_as_configuration_failur
     assert report.failure_kind == ValidationFailureKind.CONFIGURATION
     assert report.diagnostic == "AUTH_FAILED"
     assert report.clean_shutdown_proven
+
+
+def test_validation_classifies_fail_closed_supervisor_failure_as_infrastructure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Retry a runtime supervisor failure instead of rejecting the immutable Version."""
+
+    from vpn_runtime import validation
+
+    class SupervisorFailedGateway(FakeValidationGateway):
+        """Fail while stopping the provider for the fail-closed proof."""
+
+        async def provider_interrupt_for_validation(self) -> None:
+            """Expose one already-redacted supervisor failure."""
+
+            raise GatewaySupervisorFailure("owned process absence cannot be proved")
+
+    monkeypatch.setattr(validation, "GatewayRuntime", SupervisorFailedGateway)
+    monkeypatch.setattr(
+        validation,
+        "_socks_https_get",
+        lambda **_kwargs: SocksHttpsResponse(body=b"private-nonce", status_code=200),
+    )
+
+    report = asyncio.run(
+        validation_run(
+            config_root_path=tmp_path / "config",
+            expected_nonce=b"private-nonce",
+            https_url="https://validation.example.test/nonce",
+            protocol=VpnProtocol.OPENVPN,
+            runtime_root_path=tmp_path / "runtime",
+        )
+    )
+
+    assert report.status is ValidationStatus.FAILED
+    assert report.phase is ValidationPhase.FAIL_CLOSED
+    assert report.failure_kind == ValidationFailureKind.INFRASTRUCTURE
+    assert report.diagnostic == "owned process absence cannot be proved"
+
+
+def test_validation_cleanup_failure_overrides_deterministic_test_classification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Treat an unproved cleanup as retryable even after a deterministic test failure."""
+
+    from vpn_runtime import validation
+
+    class CleanupFailedGateway(FakeValidationGateway):
+        """Fail the cleanup that follows a fail-closed assertion failure."""
+
+        async def stop(self) -> None:
+            """Expose one already-redacted cleanup failure."""
+
+            raise GatewaySupervisorFailure("cleanup absence cannot be proved")
+
+    call_count = 0
+
+    def socks_https_get(**_kwargs: object) -> SocksHttpsResponse:
+        """Return the nonce and then incorrectly remain reachable."""
+
+        nonlocal call_count
+        call_count += 1
+        return SocksHttpsResponse(body=b"private-nonce", status_code=200)
+
+    monkeypatch.setattr(validation, "GatewayRuntime", CleanupFailedGateway)
+    monkeypatch.setattr(validation, "_socks_https_get", socks_https_get)
+
+    report = asyncio.run(
+        validation_run(
+            config_root_path=tmp_path / "config",
+            expected_nonce=b"private-nonce",
+            https_url="https://validation.example.test/nonce",
+            protocol=VpnProtocol.OPENVPN,
+            runtime_root_path=tmp_path / "runtime",
+        )
+    )
+
+    assert report.status is ValidationStatus.FAILED
+    assert report.phase is ValidationPhase.FAIL_CLOSED
+    assert report.failure_kind == ValidationFailureKind.INFRASTRUCTURE
+    assert "cleanup failed: cleanup absence cannot be proved" in report.diagnostic

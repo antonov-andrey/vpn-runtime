@@ -559,6 +559,39 @@ def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
     asyncio.run(run())
 
 
+def test_gateway_full_cleanup_stops_every_process_under_one_common_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Full cleanup must not give each process family a sequential grace period."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        process_list = [object(), object(), object()]
+        gateway._dante_process = process_list[0]
+        gateway._dnsmasq_process = process_list[1]
+        gateway._gluetun_process = process_list[2]
+        observed_call_list: list[tuple[list[object], float]] = []
+
+        async def process_list_stop(
+            selected_process_list: list[object],
+            process_stop_deadline: float,
+        ) -> None:
+            observed_call_list.append((selected_process_list, process_stop_deadline))
+
+        monkeypatch.setattr(gateway, "_process_list_stop", process_list_stop)
+        deadline = asyncio.get_running_loop().time() + 30
+
+        await gateway._process_cleanup(deadline)
+
+        assert observed_call_list == [(process_list, deadline)]
+        assert gateway._dante_process is None
+        assert gateway._dnsmasq_process is None
+        assert gateway._gluetun_process is None
+
+    asyncio.run(run())
+
+
 def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -569,7 +602,10 @@ def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
         gateway = _gateway_get(tmp_path)
         provider_start_count = 0
 
-        async def user_plane_stop(process_stop_deadline: float) -> None:
+        async def process_list_stop(
+            process_list: list[object],
+            process_stop_deadline: float,
+        ) -> None:
             """Represent a supervisor failure before old provider cleanup completes."""
 
             raise RuntimeError("synthetic cleanup proof failure")
@@ -581,13 +617,48 @@ def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
             provider_start_count += 1
             return 0.0
 
-        monkeypatch.setattr(gateway, "_user_plane_stop", user_plane_stop)
+        monkeypatch.setattr(gateway, "_process_list_stop", process_list_stop)
         monkeypatch.setattr(gateway, "_provider_attempt_start", provider_attempt_start)
 
         with pytest.raises(GatewaySupervisorFailure, match="cleanup could not be proven"):
             await gateway._provider_attempt_restart()
 
         assert provider_start_count == 0
+
+    asyncio.run(run())
+
+
+def test_gateway_provider_restart_reaps_previous_attempt_output_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Do not retain one output-reader task per indefinite provider retry."""
+
+    async def run() -> None:
+        gateway = _gateway_get(tmp_path)
+        output_task = asyncio.create_task(asyncio.Event().wait())
+        gateway._output_task_list.append(output_task)
+
+        async def all_processes_stop(_deadline: float) -> None:
+            """Represent one already-proven process-session cleanup."""
+
+        async def provider_attempt_start() -> float:
+            """Represent immediate replacement-process start."""
+
+            return asyncio.get_running_loop().time()
+
+        async def readiness_wait(_deadline: float) -> None:
+            """Represent immediate replacement readiness."""
+
+        monkeypatch.setattr(gateway, "_all_processes_stop", all_processes_stop)
+        monkeypatch.setattr(gateway, "_provider_attempt_start", provider_attempt_start)
+        monkeypatch.setattr(gateway, "_gluetun_ready_wait", readiness_wait)
+        monkeypatch.setattr(gateway, "_user_plane_start", readiness_wait)
+
+        await gateway._provider_attempt_restart()
+
+        assert output_task.cancelled()
+        assert gateway._output_task_list == []
 
     asyncio.run(run())
 

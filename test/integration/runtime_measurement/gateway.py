@@ -99,7 +99,7 @@ class GatewayMeasurement:
                 predicate=lambda: runtime.status.state is GatewayState.RECONNECTING,
                 timeout_seconds=(self._provider_recovery_grace_seconds + 2 * HEALTH_POLL_INTERVAL_SECONDS),
             )
-            fail_closed_proven = await self._socks_failure_prove()
+            fail_closed_proven = await _socks_failure_prove()
             self._iptables_run(["-D", *rule_argument_list])
             rule_is_installed = False
             await state_wait(
@@ -239,25 +239,25 @@ class GatewayMeasurement:
             + 3 * PROVIDER_RETRY_INITIAL_SECONDS
         )
 
-    @staticmethod
-    async def _socks_failure_prove() -> bool:
-        """Prove that SOCKS cannot establish an upstream TCP connection."""
 
-        writer: asyncio.StreamWriter | None = None
-        try:
-            reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 1080), timeout=3)
-            writer.write(b"\x05\x01\x00")
-            await writer.drain()
-            method_response = await asyncio.wait_for(reader.readexactly(2), timeout=3)
-            if method_response != b"\x05\x00":
-                return True
-            writer.write(b"\x05\x01\x00\x01\x01\x01\x01\x01\x01\xbb")
-            await writer.drain()
-            connect_response = await asyncio.wait_for(reader.readexactly(4), timeout=3)
-            return connect_response[1] != 0
-        except OSError, TimeoutError, asyncio.IncompleteReadError:
+async def _socks_failure_prove() -> bool:
+    """Prove that SOCKS cannot establish an upstream TCP connection."""
+
+    writer: asyncio.StreamWriter | None = None
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection("127.0.0.1", 1080), timeout=3)
+        writer.write(b"\x05\x01\x00")
+        await writer.drain()
+        method_response = await asyncio.wait_for(reader.readexactly(2), timeout=3)
+        if method_response != b"\x05\x00":
             return True
-        finally:
-            if writer is not None:
-                writer.close()
-                await writer.wait_closed()
+        writer.write(b"\x05\x01\x00\x01\x01\x01\x01\x01\x01\xbb")
+        await writer.drain()
+        connect_response = await asyncio.wait_for(reader.readexactly(4), timeout=3)
+        return connect_response[1] != 0
+    except OSError, TimeoutError, asyncio.IncompleteReadError:
+        return True
+    finally:
+        if writer is not None:
+            writer.close()
+            await writer.wait_closed()

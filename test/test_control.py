@@ -27,7 +27,7 @@ class FakeGatewayRuntime:
         self.activate_count = 0
         self.config = config
         self.stop_count = 0
-        self.status = self._status_get(0, GatewayState.PREPARED)
+        self.status = _fake_gateway_status_get(0, GatewayState.PREPARED)
         self._status_callback = status_callback
         self._fatal_failure_event = asyncio.Event()
         self.instance_list.append(self)
@@ -37,17 +37,17 @@ class FakeGatewayRuntime:
         """Publish activating then ready without opening a provider connection."""
 
         self.activate_count += 1
-        self.status = self._status_get(generation, GatewayState.ACTIVATING)
+        self.status = _fake_gateway_status_get(generation, GatewayState.ACTIVATING)
         self._notify()
         await asyncio.sleep(0)
-        self.status = self._status_get(generation, GatewayState.READY)
+        self.status = _fake_gateway_status_get(generation, GatewayState.READY)
         self._notify()
 
     async def stop(self) -> None:
         """Publish an idempotent stopped state."""
 
         self.stop_count += 1
-        self.status = self._status_get(self.status.generation, GatewayState.STOPPED)
+        self.status = _fake_gateway_status_get(self.status.generation, GatewayState.STOPPED)
         self._notify()
 
     async def fatal_failure_wait(self) -> str:
@@ -62,16 +62,16 @@ class FakeGatewayRuntime:
         if self._status_callback is not None:
             self._status_callback(self.status)
 
-    @staticmethod
-    def _status_get(generation: int, state: GatewayState) -> GatewayStatus:
-        """Build one immutable fake status."""
 
-        return GatewayStatus(
-            diagnostic="",
-            generation=generation,
-            state=state,
-            t_update=datetime.now(timezone.utc),
-        )
+def _fake_gateway_status_get(generation: int, state: GatewayState) -> GatewayStatus:
+    """Build one immutable fake status."""
+
+    return GatewayStatus(
+        diagnostic="",
+        generation=generation,
+        state=state,
+        t_update=datetime.now(timezone.utc),
+    )
 
 
 def _daemon_get(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ControlDaemon:
@@ -144,6 +144,32 @@ def test_control_newer_stop_fences_generation_without_waiting_for_provider_clean
     asyncio.run(run())
 
 
+def test_control_same_generation_activate_does_not_interrupt_internal_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Repeated orchestration observes reconnecting state without restarting its provider attempt."""
+
+    async def run() -> None:
+        daemon = _daemon_get(monkeypatch, tmp_path)
+        fake_runtime = FakeGatewayRuntime.instance_list[-1]
+        await daemon.request_handle(ControlRequest(command=ControlCommand.ACTIVATE, generation=3))
+        await asyncio.sleep(0)
+        fake_runtime.status = _fake_gateway_status_get(3, GatewayState.RECONNECTING)
+        fake_runtime._notify()
+        stop_count_before_retry = fake_runtime.stop_count
+
+        response = await daemon.request_handle(ControlRequest(command=ControlCommand.ACTIVATE, generation=3))
+
+        assert response.ok
+        assert response.status.state is GatewayState.RECONNECTING
+        assert fake_runtime.activate_count == 1
+        assert fake_runtime.stop_count == stop_count_before_retry
+        await daemon.close()
+
+    asyncio.run(run())
+
+
 def test_control_unix_socket_returns_exact_redacted_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -171,6 +197,31 @@ def test_control_unix_socket_returns_exact_redacted_status(
         assert status_response.status.state is GatewayState.READY
         assert socket_path.stat().st_mode & 0o777 == 0o600
         await daemon.close()
+
+    asyncio.run(run())
+
+
+def test_control_daemon_does_not_steal_a_live_socket(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A concurrent daemon cannot unlink or later remove the live owner's socket."""
+
+    async def run() -> None:
+        first_daemon = _daemon_get(monkeypatch, tmp_path)
+        await first_daemon.serve_start()
+        second_daemon = _daemon_get(monkeypatch, tmp_path)
+
+        with pytest.raises(ValueError, match="owned by a live process"):
+            await second_daemon.serve_start()
+        await second_daemon.close()
+
+        response = await _control_request_send(
+            tmp_path / "runtime" / "control.sock",
+            ControlRequest(command=ControlCommand.ACTIVATE, generation=4),
+        )
+        assert response.ok
+        await first_daemon.close()
 
     asyncio.run(run())
 

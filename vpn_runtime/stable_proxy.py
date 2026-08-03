@@ -11,6 +11,9 @@ from typing import Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from vpn_runtime.atomic_file import atomic_bytes_write
+from vpn_runtime.control_socket import stale_control_socket_remove
+
 
 class StableProxyCommand(StrEnum):
     """Operations accepted by the private stable-proxy control socket."""
@@ -33,6 +36,7 @@ class StableProxyStatus(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
 
     generation: int = Field(ge=0)
+    mutation_revision: int = Field(ge=0)
     pod_uid: str = Field(min_length=1)
     runtime_instance_identity: str = Field(min_length=32, max_length=64)
     state: StableProxyState
@@ -49,6 +53,7 @@ class StableProxyRequest(BaseModel):
     expected_pod_uid: str = Field(min_length=1)
     expected_runtime_instance_identity: str = Field(min_length=32, max_length=64)
     generation: int = Field(ge=0)
+    expected_mutation_revision: int = Field(ge=0)
     upstream_host: str = ""
     upstream_port: int = Field(default=0, ge=0, le=65535)
 
@@ -106,6 +111,7 @@ class StableProxyRuntime:
             raise ValueError("listen_port must be within 1..65535")
         self._connection_writer_pair_by_identity_map: dict[int, list[asyncio.StreamWriter]] = {}
         self._control_server: asyncio.Server | None = None
+        self._control_socket_owned = False
         self._control_socket_path = control_socket_path
         self._generation = 0
         self._listen_host = listen_host
@@ -131,6 +137,7 @@ class StableProxyRuntime:
         state = StableProxyState.READY if self._upstream_host else StableProxyState.DISABLED
         return StableProxyStatus(
             generation=self._generation,
+            mutation_revision=self._mutation_epoch,
             pod_uid=self._pod_uid,
             runtime_instance_identity=self._runtime_instance_identity,
             state=state,
@@ -143,15 +150,16 @@ class StableProxyRuntime:
 
         async with self._mutation_lock:
             writer_list = self._disable(generation=self._generation)
-        await self._writer_list_close(writer_list)
+        await _writer_list_close(writer_list)
         for server in [self._listener_server, self._control_server]:
             if server is not None:
                 server.close()
                 await server.wait_closed()
         self._listener_server = None
         self._control_server = None
-        if self._control_socket_path.is_socket():
+        if self._control_socket_owned and self._control_socket_path.is_socket():
             self._control_socket_path.unlink()
+        self._control_socket_owned = False
         self._status_path.unlink(missing_ok=True)
 
     async def request_handle(self, request: StableProxyRequest) -> StableProxyResponse:
@@ -173,6 +181,12 @@ class StableProxyRuntime:
                     ok=False,
                     status=self.status,
                 )
+            if request.expected_mutation_revision != self._mutation_epoch:
+                return StableProxyResponse(
+                    diagnostic="mutation revision fence mismatch",
+                    ok=False,
+                    status=self.status,
+                )
             if request.generation < self._generation:
                 return StableProxyResponse(
                     diagnostic="generation fence rejected stale request", ok=False, status=self.status
@@ -186,7 +200,11 @@ class StableProxyRuntime:
                     )
                 return StableProxyResponse(ok=True, status=self.status)
             if request.command is StableProxyCommand.DISABLE:
-                writer_list = self._disable(generation=request.generation)
+                writer_list = (
+                    []
+                    if request.generation == self._generation and not self._upstream_host
+                    else self._disable(generation=request.generation)
+                )
                 response = StableProxyResponse(ok=True, status=self.status)
             else:
                 if request.generation == self._generation and self._upstream_host:
@@ -204,7 +222,7 @@ class StableProxyRuntime:
                 writer_list = []
                 response = None
         if response is not None:
-            await self._writer_list_close(writer_list)
+            await _writer_list_close(writer_list)
             return response
         return await self._upstream_set(request=request, expected_mutation_epoch=mutation_epoch)
 
@@ -213,37 +231,48 @@ class StableProxyRuntime:
 
         self._control_socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._control_socket_path.parent, 0o700)
-        if self._control_socket_path.exists() or self._control_socket_path.is_symlink():
-            raise ValueError("stable-proxy control socket path is not clean")
-        self._listener_server = await asyncio.start_server(
-            self._connection_handle,
-            host=self._listen_host,
-            port=self._listen_port,
+        await stale_control_socket_remove(
+            socket_path=self._control_socket_path,
+            owner_name="stable-proxy",
         )
-        self._control_server = await asyncio.start_unix_server(
-            self._control_connection_handle,
-            path=self._control_socket_path,
-        )
-        os.chmod(self._control_socket_path, 0o600)
-        self._status_write()
+        self._status_path.unlink(missing_ok=True)
+        try:
+            self._listener_server = await asyncio.start_server(
+                self._connection_handle,
+                host=self._listen_host,
+                port=self._listen_port,
+            )
+            self._control_server = await asyncio.start_unix_server(
+                self._control_connection_handle,
+                path=self._control_socket_path,
+            )
+            self._control_socket_owned = True
+            os.chmod(self._control_socket_path, 0o600)
+            self._status_write()
+        except BaseException:
+            await self._startup_rollback()
+            raise
+
+    async def _startup_rollback(self) -> None:
+        """Close only resources created by this failed startup attempt."""
+
+        for server in [self._control_server, self._listener_server]:
+            if server is not None:
+                server.close()
+                await server.wait_closed()
+        self._control_server = None
+        self._listener_server = None
+        if self._control_socket_owned and self._control_socket_path.is_socket():
+            self._control_socket_path.unlink()
+        self._control_socket_owned = False
+        self._status_path.unlink(missing_ok=True)
 
     def _status_write(self) -> None:
         """Atomically persist the current non-secret runtime fence for controller discovery."""
 
         self._status_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._status_path.parent, 0o700)
-        temporary_path = self._status_path.with_name(f".{self._status_path.name}.{os.getpid()}.tmp")
-        with temporary_path.open("w", encoding="utf-8") as status_file:
-            status_file.write(self.status.model_dump_json() + "\n")
-            status_file.flush()
-            os.fsync(status_file.fileno())
-        os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, self._status_path)
-        directory_descriptor = os.open(self._status_path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        atomic_bytes_write(self._status_path, (self.status.model_dump_json() + "\n").encode())
 
     async def _connection_handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         """Relay one accepted connection through the currently fenced upstream."""
@@ -278,7 +307,7 @@ class StableProxyRuntime:
         if is_overtaken:
             writer.close()
             upstream_writer.close()
-            await self._writer_list_close([writer, upstream_writer])
+            await _writer_list_close([writer, upstream_writer])
             return
 
         async def relay(source: asyncio.StreamReader, destination: asyncio.StreamWriter) -> None:
@@ -296,7 +325,7 @@ class StableProxyRuntime:
             _, pending_task_set = await asyncio.wait(relay_task_list, return_when=asyncio.FIRST_COMPLETED)
             for pending_task in pending_task_set:
                 pending_task.cancel()
-            await asyncio.gather(*pending_task_set, return_exceptions=True)
+            await asyncio.gather(*relay_task_list, return_exceptions=True)
         finally:
             self._connection_writer_pair_by_identity_map.pop(connection_identity, None)
             for connection_writer in [writer, upstream_writer]:
@@ -331,6 +360,11 @@ class StableProxyRuntime:
         self._upstream_host = ""
         self._upstream_port = 0
         self._status_write()
+        return self._active_writer_list_take()
+
+    def _active_writer_list_take(self) -> list[asyncio.StreamWriter]:
+        """Detach and close every relay owned by the previous routing state."""
+
         writer_list = [
             writer for writer_pair in self._connection_writer_pair_by_identity_map.values() for writer in writer_pair
         ]
@@ -391,21 +425,10 @@ class StableProxyRuntime:
             self._upstream_host = request.upstream_host
             self._upstream_port = request.upstream_port
             self._status_write()
-            return StableProxyResponse(ok=True, status=self.status)
-
-    @staticmethod
-    async def _writer_list_close(writer_list: list[asyncio.StreamWriter]) -> None:
-        """Bound cleanup waiting after traffic has already been disabled atomically."""
-
-        if not writer_list:
-            return
-        try:
-            await asyncio.wait_for(
-                asyncio.gather(*(writer.wait_closed() for writer in writer_list), return_exceptions=True),
-                timeout=5,
-            )
-        except TimeoutError:
-            return
+            writer_list = self._active_writer_list_take()
+            response = StableProxyResponse(ok=True, status=self.status)
+        await _writer_list_close(writer_list)
+        return response
 
 
 async def stable_proxy_request_send(
@@ -431,11 +454,26 @@ async def stable_proxy_request_send(
     return StableProxyResponse.model_validate_json(response_line)
 
 
+async def _writer_list_close(writer_list: list[asyncio.StreamWriter]) -> None:
+    """Bound cleanup waiting after traffic has already been disabled atomically."""
+
+    if not writer_list:
+        return
+    try:
+        await asyncio.wait_for(
+            asyncio.gather(*(writer.wait_closed() for writer in writer_list), return_exceptions=True),
+            timeout=5,
+        )
+    except TimeoutError:
+        return
+
+
 def _control_args_parse() -> argparse.Namespace:
     """Parse one stable-proxy control request."""
 
     parser = argparse.ArgumentParser(description="Control one exact stable fail-closed proxy runtime.")
     parser.add_argument("--expected-pod-uid", required=True)
+    parser.add_argument("--expected-mutation-revision", required=True, type=int)
     parser.add_argument("--expected-runtime-instance-identity", required=True)
     parser.add_argument("--generation", required=True, type=int)
     parser.add_argument("--socket-path", required=True, type=Path)

@@ -6,12 +6,13 @@ from enum import StrEnum
 import os
 from pathlib import Path
 import signal
-import stat
 import sys
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from vpn_runtime.atomic_file import atomic_bytes_write
 from vpn_runtime.config import VpnProtocol
+from vpn_runtime.control_socket import stale_control_socket_remove
 from vpn_runtime.gateway import GatewayConfig, GatewayRuntime, GatewayState, GatewayStatus
 from vpn_runtime.timing import (
     CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
@@ -71,6 +72,7 @@ class ControlDaemon:
         self._activation_task: asyncio.Task[None] | None = None
         self._command_lock = asyncio.Lock()
         self._server: asyncio.Server | None = None
+        self._socket_owned = False
         self._socket_path = socket_path
         self._state_path = state_path
         stored_status = self._stored_status_get()
@@ -97,7 +99,9 @@ class ControlDaemon:
             await asyncio.gather(self._activation_task, return_exceptions=True)
             self._activation_task = None
         await self._runtime.stop()
-        self._socket_path.unlink(missing_ok=True)
+        if self._socket_owned and self._socket_path.is_socket():
+            self._socket_path.unlink()
+        self._socket_owned = False
 
     async def fatal_failure_wait(self) -> str:
         """Wait for a runtime failure that requires Kubernetes to replace this Pod."""
@@ -137,13 +141,21 @@ class ControlDaemon:
         """Create the private mode-0600 Unix socket and begin accepting requests."""
 
         self._socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        if self._socket_path.exists() or self._socket_path.is_symlink():
-            socket_mode = self._socket_path.lstat().st_mode
-            if not stat.S_ISSOCK(socket_mode):
-                raise ValueError(f"control socket path is occupied by a non-socket: {self._socket_path}")
-            self._socket_path.unlink()
-        self._server = await asyncio.start_unix_server(self._connection_handle, path=self._socket_path)
-        os.chmod(self._socket_path, 0o600)
+        os.chmod(self._socket_path.parent, 0o700)
+        await stale_control_socket_remove(socket_path=self._socket_path, owner_name="gateway")
+        try:
+            self._server = await asyncio.start_unix_server(self._connection_handle, path=self._socket_path)
+            self._socket_owned = True
+            os.chmod(self._socket_path, 0o600)
+        except BaseException:
+            if self._server is not None:
+                self._server.close()
+                await self._server.wait_closed()
+                self._server = None
+            if self._socket_owned and self._socket_path.is_socket():
+                self._socket_path.unlink()
+            self._socket_owned = False
+            raise
 
     async def _activate(self, generation: int) -> ControlResponse:
         """Start or recover the exact latest generation without awaiting readiness."""
@@ -153,7 +165,12 @@ class ControlDaemon:
             self._highest_generation = generation
         elif self._activation_task is not None and not self._activation_task.done():
             return ControlResponse(ok=True, status=self.status)
-        elif self._runtime.status.state is GatewayState.READY:
+        elif self._runtime.status.state in {
+            GatewayState.ACTIVATING,
+            GatewayState.READY,
+            GatewayState.RECONNECTING,
+            GatewayState.STOPPING,
+        }:
             return ControlResponse(ok=True, status=self.status)
         self._state_write(
             GatewayStatus(
@@ -210,10 +227,8 @@ class ControlDaemon:
         """Atomically replace the redacted durable status document."""
 
         self._state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        temporary_path = self._state_path.with_name(f".{self._state_path.name}.{os.getpid()}.tmp")
-        temporary_path.write_text(status.model_dump_json() + "\n", encoding="utf-8")
-        os.chmod(temporary_path, 0o600)
-        os.replace(temporary_path, self._state_path)
+        os.chmod(self._state_path.parent, 0o700)
+        atomic_bytes_write(self._state_path, (status.model_dump_json() + "\n").encode())
 
     def _stored_status_get(self) -> GatewayStatus | None:
         """Load a previous redacted status only to preserve its generation fence."""

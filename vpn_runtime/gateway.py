@@ -73,6 +73,13 @@ class GatewaySupervisorFailure(RuntimeError):
     """Raised when owned-process cleanup or the local supervisor cannot be proven safe."""
 
 
+def _health_monitor_task_done(monitor_task: asyncio.Task[None]) -> None:
+    """Consume one completed monitor task exception after status persistence."""
+
+    if not monitor_task.cancelled():
+        monitor_task.exception()
+
+
 class GatewayState(StrEnum):
     """Observable states of one fenced gateway generation."""
 
@@ -258,7 +265,7 @@ class GatewayRuntime:
             raise RuntimeError(diagnostic) from exc
         self._status_set(generation=generation, state=GatewayState.READY)
         self._health_monitor_task = asyncio.create_task(self._health_monitor(generation))
-        self._health_monitor_task.add_done_callback(self._health_monitor_task_done)
+        self._health_monitor_task.add_done_callback(_health_monitor_task_done)
 
     async def fatal_failure_wait(self) -> str:
         """Wait until this runtime can no longer safely supervise its owned processes."""
@@ -296,10 +303,8 @@ class GatewayRuntime:
         if health_monitor_task is not None:
             health_monitor_task.cancel()
             await asyncio.gather(health_monitor_task, return_exceptions=True)
-        process_stop_deadline = self._process_stop_deadline_get()
-        await self._user_plane_stop(process_stop_deadline)
-        await self._process_list_stop([self._gluetun_process], process_stop_deadline)
-        self._gluetun_process = None
+        await self._all_processes_stop(self._process_stop_deadline_get())
+        await self._process_output_task_list_stop()
 
     def _diagnostic_redact(self, diagnostic: str) -> str:
         """Remove exact credentials and generated auth paths from one diagnostic."""
@@ -352,9 +357,8 @@ class GatewayRuntime:
 
         process_stop_deadline = self._process_stop_deadline_get()
         try:
-            await self._user_plane_stop(process_stop_deadline)
-            await self._process_list_stop([self._gluetun_process], process_stop_deadline)
-            self._gluetun_process = None
+            await self._all_processes_stop(process_stop_deadline)
+            await self._process_output_task_list_stop()
             self._gluetun_authentication_link_remove()
             if self._provider_attempt_root_path is not None:
                 await asyncio.to_thread(shutil.rmtree, self._provider_attempt_root_path, True)
@@ -733,9 +737,9 @@ class GatewayRuntime:
                     and await self._health_server_is_ready()
                 )
                 if not gluetun_is_ready:
-                    await self._user_plane_stop(self._process_stop_deadline_get())
                     if provider_unhealthy_start_time is None:
                         provider_unhealthy_start_time = loop.time()
+                    await self._user_plane_stop(self._process_stop_deadline_get())
                     self._status_set(generation=generation, state=GatewayState.RECONNECTING)
                     provider_exited = self._gluetun_process is None or self._gluetun_process.returncode is not None
                     provider_recovery_grace_expired = (
@@ -810,13 +814,6 @@ class GatewayRuntime:
         self._fatal_failure_diagnostic = self._diagnostic_redact(str(failure))
         self._fatal_failure_event.set()
 
-    @staticmethod
-    def _health_monitor_task_done(monitor_task: asyncio.Task[None]) -> None:
-        """Consume one completed monitor task exception after status persistence."""
-
-        if not monitor_task.cancelled():
-            monitor_task.exception()
-
     async def _health_server_is_ready(self) -> bool:
         """Return whether the loopback Gluetun health endpoint responds with HTTP 200."""
 
@@ -841,17 +838,26 @@ class GatewayRuntime:
             process_stop_deadline: Monotonic common graceful-stop deadline.
         """
 
-        await self._user_plane_stop(process_stop_deadline)
-        await self._process_list_stop([self._gluetun_process], process_stop_deadline)
-        self._gluetun_process = None
+        await self._all_processes_stop(process_stop_deadline)
         self._gluetun_authentication_link_remove()
-        if self._output_task_list:
-            await asyncio.gather(*self._output_task_list, return_exceptions=True)
-            self._output_task_list.clear()
+        await self._process_output_task_list_stop()
         self._provider_attempt_root_path = None
         if self._attempt_root_path is not None:
             await asyncio.to_thread(shutil.rmtree, self._attempt_root_path, True)
             self._attempt_root_path = None
+
+    async def _all_processes_stop(self, process_stop_deadline: float) -> None:
+        """Signal every owned process session before one common graceful deadline."""
+
+        await self._process_list_stop(
+            [self._dante_process, self._dnsmasq_process, self._gluetun_process],
+            process_stop_deadline,
+        )
+        self._dante_process = None
+        self._dnsmasq_process = None
+        self._gluetun_process = None
+        if self._proxy_dns_redirect_is_owned:
+            await asyncio.to_thread(self._proxy_dns_redirect_set, enabled=False)
 
     async def _process_output_forward(
         self,
@@ -891,6 +897,17 @@ class GatewayRuntime:
                 ),
                 flush=True,
             )
+
+    async def _process_output_task_list_stop(self) -> None:
+        """Cancel and reap every output reader after its complete process set stopped."""
+
+        output_task_list = self._output_task_list
+        self._output_task_list = []
+        for output_task in output_task_list:
+            if not output_task.done():
+                output_task.cancel()
+        if output_task_list:
+            await asyncio.gather(*output_task_list, return_exceptions=True)
 
     def _recent_diagnostic_get(self) -> str:
         """Return a bounded redacted child-output tail for concrete failures."""

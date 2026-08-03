@@ -12,8 +12,14 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict
 
+from vpn_runtime.atomic_file import atomic_bytes_write
 from vpn_runtime.config import VpnProtocol
-from vpn_runtime.gateway import GatewayConfig, GatewayConfigurationError, GatewayRuntime
+from vpn_runtime.gateway import (
+    GatewayConfig,
+    GatewayConfigurationError,
+    GatewayRuntime,
+    GatewaySupervisorFailure,
+)
 from vpn_runtime.timing import (
     CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT,
     PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
@@ -22,6 +28,9 @@ from vpn_runtime.timing import (
     process_stop_timeout_seconds_parse,
     provider_recovery_grace_seconds_parse,
 )
+
+FAIL_CLOSED_PROBE_TIMEOUT_SECONDS_DEFAULT = 3
+NONCE_HTTPS_TIMEOUT_SECONDS_DEFAULT = 15
 
 
 class ValidationFailureKind(StrEnum):
@@ -182,7 +191,9 @@ async def validation_run(
     config_root_path: Path,
     connection_attempt_timeout_seconds: int = 180,
     expected_nonce: bytes,
+    fail_closed_probe_timeout_seconds: int = FAIL_CLOSED_PROBE_TIMEOUT_SECONDS_DEFAULT,
     https_url: str,
+    nonce_https_timeout_seconds: int = NONCE_HTTPS_TIMEOUT_SECONDS_DEFAULT,
     process_stop_timeout_seconds: int = 30,
     protocol: VpnProtocol,
     provider_recovery_grace_seconds: int = 180,
@@ -194,7 +205,9 @@ async def validation_run(
         config_root_path: Exact immutable VPN source snapshot.
         connection_attempt_timeout_seconds: One end-to-end provider-attempt deadline.
         expected_nonce: Exact private nonce bytes expected from S3.
+        fail_closed_probe_timeout_seconds: Maximum failed request proof duration.
         https_url: Platform-owned HTTPS observation endpoint.
+        nonce_https_timeout_seconds: Maximum nonce HTTPS request duration.
         process_stop_timeout_seconds: Shared owned-process graceful-stop deadline.
         protocol: Exact protocol adapter.
         provider_recovery_grace_seconds: Internal provider recovery grace.
@@ -214,6 +227,8 @@ async def validation_run(
     try:
         if not expected_nonce:
             raise ValueError("private validation nonce must not be empty")
+        if fail_closed_probe_timeout_seconds < 1 or nonce_https_timeout_seconds < 1:
+            raise ValueError("validation probe timeouts must be positive")
         gateway = GatewayRuntime(
             GatewayConfig(
                 connection_attempt_timeout_seconds=connection_attempt_timeout_seconds,
@@ -232,7 +247,7 @@ async def validation_run(
             https_url=https_url,
             socks_host="127.0.0.1",
             socks_port=gateway.config.socks_port,
-            timeout_seconds=15,
+            timeout_seconds=nonce_https_timeout_seconds,
         )
         if not 200 <= https_response.status_code < 300:
             raise ValueError(f"controlled HTTPS endpoint returned status {https_response.status_code}")
@@ -248,7 +263,7 @@ async def validation_run(
                 https_url=https_url,
                 socks_host="127.0.0.1",
                 socks_port=gateway.config.socks_port,
-                timeout_seconds=3,
+                timeout_seconds=fail_closed_probe_timeout_seconds,
             )
         except OSError, TimeoutError, ConnectionError:
             fail_closed_proven = True
@@ -274,7 +289,9 @@ async def validation_run(
     except Exception as exc:
         diagnostic = str(exc)
         failure_kind = ValidationFailureKind.TEST
-        if phase is ValidationPhase.STATIC:
+        if isinstance(exc, GatewaySupervisorFailure):
+            failure_kind = ValidationFailureKind.INFRASTRUCTURE
+        elif phase is ValidationPhase.STATIC:
             failure_kind = ValidationFailureKind.CONFIGURATION
         elif phase is ValidationPhase.ACTIVATION:
             failure_kind = (
@@ -284,11 +301,14 @@ async def validation_run(
             )
         elif phase is ValidationPhase.NONCE_HTTPS:
             failure_kind = ValidationFailureKind.INFRASTRUCTURE
+        elif phase is ValidationPhase.CLEANUP:
+            failure_kind = ValidationFailureKind.INFRASTRUCTURE
         if gateway is not None:
             try:
                 await gateway.stop()
             except Exception as cleanup_exc:
                 diagnostic = f"{diagnostic}; cleanup failed: {cleanup_exc}"
+                failure_kind = ValidationFailureKind.INFRASTRUCTURE
             clean_shutdown_proven = not gateway.have_owned_processes() and not any(
                 runtime_root_path.glob("generation_*")
             )
@@ -306,6 +326,15 @@ async def validation_run(
         )
 
 
+def _positive_timeout_seconds_parse(value: str) -> int:
+    """Parse one positive platform-owned validation timeout."""
+
+    timeout_seconds = int(value)
+    if timeout_seconds < 1:
+        raise argparse.ArgumentTypeError("validation timeout must be positive")
+    return timeout_seconds
+
+
 def _args_parse() -> argparse.Namespace:
     """Parse exact validation input and report paths."""
 
@@ -317,7 +346,17 @@ def _args_parse() -> argparse.Namespace:
         type=connection_attempt_timeout_seconds_parse,
     )
     parser.add_argument("--expected-nonce-path", required=True, type=Path)
+    parser.add_argument(
+        "--fail-closed-probe-timeout-seconds",
+        default=FAIL_CLOSED_PROBE_TIMEOUT_SECONDS_DEFAULT,
+        type=_positive_timeout_seconds_parse,
+    )
     parser.add_argument("--https-url-path", required=True, type=Path)
+    parser.add_argument(
+        "--nonce-https-timeout-seconds",
+        default=NONCE_HTTPS_TIMEOUT_SECONDS_DEFAULT,
+        type=_positive_timeout_seconds_parse,
+    )
     parser.add_argument(
         "--process-stop-timeout-seconds",
         default=PROCESS_STOP_TIMEOUT_SECONDS_DEFAULT,
@@ -345,10 +384,8 @@ def main() -> None:
     argument_by_name_map["https_url"] = https_url_path.read_text(encoding="utf-8").strip()
     report = asyncio.run(validation_run(**argument_by_name_map))
     report_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    temporary_report_path = report_path.with_name(f".{report_path.name}.{os.getpid()}.tmp")
-    temporary_report_path.write_text(report.model_dump_json() + "\n", encoding="utf-8")
-    os.chmod(temporary_report_path, 0o600)
-    os.replace(temporary_report_path, report_path)
+    os.chmod(report_path.parent, 0o700)
+    atomic_bytes_write(report_path, (report.model_dump_json() + "\n").encode())
     print(report.model_dump_json(), flush=True)
     if report.status is not ValidationStatus.PASSED:
         raise SystemExit(1)
