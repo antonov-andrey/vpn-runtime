@@ -46,6 +46,7 @@ async def stable_proxy_switch_restart_get(*, runtime_root_path: Path) -> Measure
                 StableProxyRequest(
                     command=StableProxyCommand.SET_UPSTREAM,
                     expected_pod_uid=runtime.status.pod_uid,
+                    expected_mutation_revision=runtime.status.mutation_revision,
                     expected_runtime_instance_identity=runtime.status.runtime_instance_identity,
                     generation=generation,
                     upstream_host="127.0.0.1",
