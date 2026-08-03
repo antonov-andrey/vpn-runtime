@@ -17,7 +17,11 @@ from vpn_runtime.stable_proxy import (
 
 
 def _available_port_get() -> int:
-    """Reserve and release one loopback port for the next local listener."""
+    """Reserve and release one loopback port for the next local listener.
+
+    Returns:
+        Released loopback port number available to the next listener.
+    """
 
     with socket.socket() as port_socket:
         port_socket.bind(("127.0.0.1", 0))
@@ -25,7 +29,11 @@ def _available_port_get() -> int:
 
 
 def test_stable_proxy_starts_disabled_and_fences_control_identity(tmp_path: Path) -> None:
-    """Require exact Pod and runtime identities before any mutation."""
+    """Require exact Pod and runtime identities before any mutation.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
         """Exercise the private control protocol against one real Unix socket."""
@@ -74,7 +82,11 @@ def test_stable_proxy_starts_disabled_and_fences_control_identity(tmp_path: Path
 
 
 def test_stable_proxy_restart_reclaims_only_a_stale_socket(tmp_path: Path) -> None:
-    """A same-Pod process restart rotates its fence and starts fail-closed."""
+    """A same-Pod process restart rotates its fence and starts fail-closed.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
         """Leave the kernel socket path as a crashed process would, then restart."""
@@ -125,7 +137,11 @@ def test_stable_proxy_restart_reclaims_only_a_stale_socket(tmp_path: Path) -> No
 
 
 def test_stable_proxy_restart_does_not_steal_a_live_socket(tmp_path: Path) -> None:
-    """A concurrent runtime cannot unlink or replace the live control owner."""
+    """A concurrent runtime cannot unlink or replace the live control owner.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
         """Attempt a second startup and prove the first endpoint remains usable."""
@@ -168,10 +184,19 @@ def test_stable_proxy_restart_does_not_steal_a_live_socket(tmp_path: Path) -> No
 
 
 def test_stable_proxy_switches_one_exact_upstream_and_disables_active_traffic(tmp_path: Path) -> None:
-    """Relay only through the selected generation and close traffic on disable."""
+    """Relay only through the selected generation and close traffic on disable.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def echo_handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Echo one bounded test payload."""
+        """Echo one bounded test payload.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         payload = await reader.read(1024)
         writer.write(payload)
@@ -304,10 +329,19 @@ def test_stable_proxy_switches_one_exact_upstream_and_disables_active_traffic(tm
 
 
 def test_stable_proxy_generation_switch_closes_the_previous_upstream_relay(tmp_path: Path) -> None:
-    """A routing-state change cannot leave an established old-generation relay alive."""
+    """A routing-state change cannot leave an established old-generation relay alive.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def echo_handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Echo until the proxy closes this upstream connection."""
+        """Echo until the proxy closes this upstream connection.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         try:
             while payload := await reader.read(1024):
@@ -379,10 +413,20 @@ def test_stable_proxy_disable_overtakes_an_inflight_upstream_proof(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Never publish an upstream whose readiness proof began before fail-close."""
+    """Never publish an upstream whose readiness proof began before fail-close.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def echo_handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Hold a reachable proof endpoint until the test closes it."""
+        """Hold a reachable proof endpoint until the test closes it.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         await reader.read()
         writer.close()
@@ -406,7 +450,15 @@ def test_stable_proxy_disable_overtakes_an_inflight_upstream_proof(
         real_open_connection = asyncio.open_connection
 
         async def delayed_open_connection(host: str, port: int) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
-            """Pause the proof outside the mutation lock."""
+            """Pause the proof outside the mutation lock.
+
+            Args:
+                host: Host.
+                port: TCP port.
+
+            Returns:
+                Values in deterministic immutable order.
+            """
 
             proof_started.set()
             await proof_release.wait()

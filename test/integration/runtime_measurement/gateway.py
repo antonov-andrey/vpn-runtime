@@ -34,6 +34,18 @@ class GatewayMeasurement:
         provider_recovery_grace_seconds: int,
         runtime_root_path: Path,
     ) -> None:
+        """Initialize the gateway measurement dependencies.
+
+        Args:
+            config_root_path: Exact filesystem path for config root.
+            connection_attempt_timeout_seconds: Connection attempt timeout in seconds.
+            expected_nonce: Exact private nonce bytes.
+            https_url: Presigned HTTPS URL.
+            process_stop_timeout_seconds: Process stop timeout in seconds.
+            provider_recovery_grace_seconds: Provider recovery grace in seconds.
+            runtime_root_path: Exact filesystem path for runtime root.
+        """
+
         self._config_root_path = config_root_path
         self._connection_attempt_timeout_seconds = connection_attempt_timeout_seconds
         self._expected_nonce = expected_nonce
@@ -43,7 +55,14 @@ class GatewayMeasurement:
         self._runtime_root_path = runtime_root_path
 
     async def activation_sample_list_get(self, *, round_count: int) -> list[MeasurementSample]:
-        """Measure one cold and repeated warm provider starts plus graceful stops."""
+        """Measure one cold and repeated warm provider starts plus graceful stops.
+
+        Args:
+            round_count: Number of measurement rounds.
+
+        Returns:
+            Requested values in deterministic order.
+        """
 
         sample_list: list[MeasurementSample] = []
         for round_number in range(1, round_count + 1):
@@ -74,7 +93,11 @@ class GatewayMeasurement:
         return sample_list
 
     async def provider_blackhole_recovery_get(self) -> MeasurementSample:
-        """Block tunnel traffic, prove fail-closed, then prove same-attempt recovery."""
+        """Block tunnel traffic, prove fail-closed, then prove same-attempt recovery.
+
+        Returns:
+            Resulting measurement sample.
+        """
 
         runtime = self._gateway_get(suffix="blackhole-recovery")
         rule_argument_list = [
@@ -126,7 +149,11 @@ class GatewayMeasurement:
             await runtime.stop()
 
     async def provider_dns_change_replacement_get(self) -> MeasurementSample:
-        """Inject one changed unreachable DNS answer, then prove a fresh successful attempt."""
+        """Inject one changed unreachable DNS answer, then prove a fresh successful attempt.
+
+        Returns:
+            Resulting measurement sample.
+        """
 
         runtime = gateway_get(
             config_root_path=self._config_root_path,
@@ -139,6 +166,12 @@ class GatewayMeasurement:
         resolver_call_count = 0
 
         async def changing_resolver() -> dict[str, str]:
+            """Return a changed provider address on the second DNS lookup.
+
+            Returns:
+                Provider addresses keyed by hostname.
+            """
+
             nonlocal resolver_call_count
             resolver_call_count += 1
             if resolver_call_count == 2:
@@ -171,7 +204,11 @@ class GatewayMeasurement:
             await runtime.stop()
 
     async def invalid_authentication_get(self) -> MeasurementSample:
-        """Measure deterministic invalid-auth rejection using a private snapshot copy."""
+        """Measure deterministic invalid-auth rejection using a private snapshot copy.
+
+        Returns:
+            Resulting measurement sample.
+        """
 
         scenario_root_path = self._scenario_root_get("invalid-authentication")
         config_root_path = scenario_root_path / "input"
@@ -208,6 +245,15 @@ class GatewayMeasurement:
         )
 
     def _gateway_get(self, *, suffix: str) -> GatewayRuntime:
+        """Build one production gateway in an isolated measurement directory.
+
+        Args:
+            suffix: Unique test-resource suffix.
+
+        Returns:
+            Configured production gateway runtime.
+        """
+
         return gateway_get(
             config_root_path=self._config_root_path,
             connection_attempt_timeout_seconds=self._connection_attempt_timeout_seconds,
@@ -217,6 +263,13 @@ class GatewayMeasurement:
         )
 
     def _iptables_run(self, argument_list: list[str], *, check: bool = True) -> None:
+        """Apply one host-network fault-injection rule through iptables.
+
+        Args:
+            argument_list: Exact command arguments.
+            check: Whether a nonzero command exit raises an error.
+        """
+
         result = subprocess.run(
             ["/usr/sbin/iptables", *argument_list],
             capture_output=True,
@@ -227,10 +280,23 @@ class GatewayMeasurement:
             raise RuntimeError("failed to apply the measurement network fault")
 
     def _scenario_root_get(self, suffix: str) -> Path:
+        """Return one isolated retained root for a measurement scenario.
+
+        Args:
+            suffix: Unique test-resource suffix.
+
+        Returns:
+            Scenario-specific runtime root.
+        """
+
         return self._runtime_root_path / suffix
 
     def _attempt_replacement_observation_timeout_seconds_get(self) -> float:
-        """Cover one unreachable attempt and the following successful attempt."""
+        """Cover one unreachable attempt and the following successful attempt.
+
+        Returns:
+            Resulting float.
+        """
 
         return (
             2 * self._connection_attempt_timeout_seconds
@@ -241,7 +307,11 @@ class GatewayMeasurement:
 
 
 async def _socks_failure_prove() -> bool:
-    """Prove that SOCKS cannot establish an upstream TCP connection."""
+    """Prove that SOCKS cannot establish an upstream TCP connection.
+
+    Returns:
+        Whether every SOCKS connection attempt fails closed.
+    """
 
     writer: asyncio.StreamWriter | None = None
     try:

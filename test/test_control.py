@@ -22,7 +22,12 @@ class FakeGatewayRuntime:
     instance_list: list["FakeGatewayRuntime"] = []
 
     def __init__(self, config: GatewayConfig, status_callback: object = None) -> None:
-        """Create one prepared fake and publish its initial status."""
+        """Create one prepared fake and publish its initial status.
+
+        Args:
+            config: Validated runtime configuration.
+            status_callback: Status callback.
+        """
 
         self.activate_count = 0
         self.config = config
@@ -34,7 +39,11 @@ class FakeGatewayRuntime:
         self._notify()
 
     async def activate(self, generation: int) -> None:
-        """Publish activating then ready without opening a provider connection."""
+        """Publish activating then ready without opening a provider connection.
+
+        Args:
+            generation: Generation.
+        """
 
         self.activate_count += 1
         self.status = _fake_gateway_status_get(generation, GatewayState.ACTIVATING)
@@ -51,7 +60,11 @@ class FakeGatewayRuntime:
         self._notify()
 
     async def fatal_failure_wait(self) -> str:
-        """Wait for the synthetic fatal supervisor boundary."""
+        """Wait for the synthetic fatal supervisor boundary.
+
+        Returns:
+            Resulting text value.
+        """
 
         await self._fatal_failure_event.wait()
         return "synthetic fatal failure"
@@ -64,7 +77,15 @@ class FakeGatewayRuntime:
 
 
 def _fake_gateway_status_get(generation: int, state: GatewayState) -> GatewayStatus:
-    """Build one immutable fake status."""
+    """Build one immutable fake status.
+
+    Args:
+        generation: Generation.
+        state: Exact runtime state.
+
+    Returns:
+        One immutable fake status.
+    """
 
     return GatewayStatus(
         diagnostic="",
@@ -75,7 +96,15 @@ def _fake_gateway_status_get(generation: int, state: GatewayState) -> GatewaySta
 
 
 def _daemon_get(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> ControlDaemon:
-    """Create one control daemon with the deterministic gateway fake."""
+    """Create one control daemon with the deterministic gateway fake.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+
+    Returns:
+        One control daemon with the deterministic gateway fake.
+    """
 
     from vpn_runtime import control
 
@@ -96,9 +125,16 @@ def test_control_activation_is_idempotent_and_rejects_smaller_generation(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Start one generation once and fence every older command."""
+    """Start one generation once and fence every older command.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prove activation is idempotent and rejects an older generation."""
+
         daemon = _daemon_get(monkeypatch, tmp_path)
         fake_runtime = FakeGatewayRuntime.instance_list[-1]
 
@@ -123,9 +159,16 @@ def test_control_newer_stop_fences_generation_without_waiting_for_provider_clean
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Advance the fence and expose stopped state through one idempotent command."""
+    """Advance the fence and expose stopped state through one idempotent command.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Fence a newer stop generation without awaiting provider cleanup."""
+
         daemon = _daemon_get(monkeypatch, tmp_path)
         fake_runtime = FakeGatewayRuntime.instance_list[-1]
         await daemon.request_handle(ControlRequest(command=ControlCommand.ACTIVATE, generation=2))
@@ -148,9 +191,16 @@ def test_control_same_generation_activate_does_not_interrupt_internal_recovery(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Repeated orchestration observes reconnecting state without restarting its provider attempt."""
+    """Repeated orchestration observes reconnecting state without restarting its provider attempt.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Keep same-generation activation from interrupting internal recovery."""
+
         daemon = _daemon_get(monkeypatch, tmp_path)
         fake_runtime = FakeGatewayRuntime.instance_list[-1]
         await daemon.request_handle(ControlRequest(command=ControlCommand.ACTIVATE, generation=3))
@@ -174,9 +224,16 @@ def test_control_unix_socket_returns_exact_redacted_status(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Serve the shell-free JSON command protocol only on the private Unix socket."""
+    """Serve the shell-free JSON command protocol only on the private Unix socket.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Serve exact redacted gateway status over the Unix control socket."""
+
         daemon = _daemon_get(monkeypatch, tmp_path)
         socket_path = tmp_path / "runtime" / "control.sock"
         await daemon.serve_start()
@@ -205,9 +262,16 @@ def test_control_daemon_does_not_steal_a_live_socket(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """A concurrent daemon cannot unlink or later remove the live owner's socket."""
+    """A concurrent daemon cannot unlink or later remove the live owner's socket.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Refuse to replace a control socket owned by a live daemon."""
+
         first_daemon = _daemon_get(monkeypatch, tmp_path)
         await first_daemon.serve_start()
         second_daemon = _daemon_get(monkeypatch, tmp_path)
@@ -230,9 +294,16 @@ def test_control_restores_highest_generation_fence_as_prepared(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Preserve fencing across daemon restart without claiming stale process readiness."""
+    """Preserve fencing across daemon restart without claiming stale process readiness.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Restore the persisted highest-generation fence in prepared state."""
+
         first_daemon = _daemon_get(monkeypatch, tmp_path)
         await first_daemon.request_handle(ControlRequest(command=ControlCommand.ACTIVATE, generation=11))
         await asyncio.sleep(0)

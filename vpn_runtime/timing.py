@@ -20,7 +20,17 @@ PROVIDER_RETRY_MAXIMUM_SECONDS = 300.0
 
 
 def _bounded_integer_parse(*, maximum: int, minimum: int, name: str, value: str) -> int:
-    """Parse one CLI integer and enforce its platform safety range."""
+    """Parse one CLI integer and enforce its platform safety range.
+
+    Args:
+        maximum: Maximum.
+        minimum: Minimum.
+        name: Canonical name.
+        value: Candidate value.
+
+    Returns:
+        One CLI integer and enforce its platform safety range.
+    """
 
     try:
         parsed_value = int(value)
@@ -32,7 +42,14 @@ def _bounded_integer_parse(*, maximum: int, minimum: int, name: str, value: str)
 
 
 def connection_attempt_timeout_seconds_parse(value: str) -> int:
-    """Parse one provider-attempt deadline from the CLI."""
+    """Parse one provider-attempt deadline from the CLI.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        One provider-attempt deadline from the CLI.
+    """
 
     return _bounded_integer_parse(
         maximum=CONNECTION_ATTEMPT_TIMEOUT_SECONDS_MAXIMUM,
@@ -43,7 +60,14 @@ def connection_attempt_timeout_seconds_parse(value: str) -> int:
 
 
 def process_stop_timeout_seconds_parse(value: str) -> int:
-    """Parse one common graceful process-session deadline from the CLI."""
+    """Parse one common graceful process-session deadline from the CLI.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        One common graceful process-session deadline from the CLI.
+    """
 
     return _bounded_integer_parse(
         maximum=PROCESS_STOP_TIMEOUT_SECONDS_MAXIMUM,
@@ -54,7 +78,14 @@ def process_stop_timeout_seconds_parse(value: str) -> int:
 
 
 def provider_recovery_grace_seconds_parse(value: str) -> int:
-    """Parse one current-provider recovery grace from the CLI."""
+    """Parse one current-provider recovery grace from the CLI.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        One current-provider recovery grace from the CLI.
+    """
 
     return _bounded_integer_parse(
         maximum=PROVIDER_RECOVERY_GRACE_SECONDS_MAXIMUM,

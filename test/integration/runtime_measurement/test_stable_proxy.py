@@ -6,7 +6,11 @@ from runtime_measurement.stable_proxy import stable_proxy_switch_restart_get
 
 
 def test_stable_proxy_switch_restart_measurement(tmp_path) -> None:
-    """Keep the measurement request aligned with every stable-proxy fence."""
+    """Keep the measurement request aligned with every stable-proxy fence.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     sample = asyncio.run(stable_proxy_switch_restart_get(runtime_root_path=tmp_path))
 

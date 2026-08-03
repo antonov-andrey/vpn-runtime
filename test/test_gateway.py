@@ -78,10 +78,20 @@ def test_gateway_construction_is_prepared_and_opens_no_provider_connection(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Perform static validation without creating any child process."""
+    """Perform static validation without creating any child process.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def process_create(*args: object, **kwargs: object) -> None:
-        """Fail if prepared construction attempts process startup."""
+        """Fail if prepared construction attempts process startup.
+
+        Args:
+            *args: Additional positional arguments.
+            **kwargs: Provider keyword arguments.
+        """
 
         raise AssertionError("prepared construction must not create a process")
 
@@ -96,7 +106,11 @@ def test_gateway_construction_is_prepared_and_opens_no_provider_connection(
 
 
 def test_gateway_config_uses_approved_runtime_defaults(tmp_path: Path) -> None:
-    """Keep connection, recovery, and graceful-stop defaults explicit and independent."""
+    """Keep connection, recovery, and graceful-stop defaults explicit and independent.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     gateway = _gateway_get(tmp_path)
 
@@ -112,30 +126,53 @@ def test_gateway_activation_shares_one_provider_attempt_deadline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Do not reset readiness time independently for provider, DNS, and SOCKS."""
+    """Do not reset readiness time independently for provider, DNS, and SOCKS.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prove all activation phases share one provider-attempt deadline."""
+
         gateway = _gateway_get(tmp_path)
         deadline_list: list[float] = []
         monitor_release = asyncio.Event()
 
         async def provider_attempt_start() -> float:
-            """Return one deterministic provider-process start time."""
+            """Return one deterministic provider-process start time.
+
+            Returns:
+                One deterministic provider-process start time.
+            """
 
             return 100.0
 
         async def readiness_wait(connection_deadline: float) -> None:
-            """Capture the provider readiness deadline."""
+            """Capture the provider readiness deadline.
+
+            Args:
+                connection_deadline: Connection deadline.
+            """
 
             deadline_list.append(connection_deadline)
 
         async def user_plane_start(connection_deadline: float) -> None:
-            """Capture the same deadline inherited by DNS and SOCKS."""
+            """Capture the same deadline inherited by DNS and SOCKS.
+
+            Args:
+                connection_deadline: Connection deadline.
+            """
 
             deadline_list.append(connection_deadline)
 
         async def health_monitor(generation: int) -> None:
-            """Keep the synthetic active generation alive until stop."""
+            """Keep the synthetic active generation alive until stop.
+
+            Args:
+                generation: Generation.
+            """
 
             await monitor_release.wait()
 
@@ -155,9 +192,16 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Materialize one generation, report readiness, and erase its whole attempt root."""
+    """Materialize one generation, report readiness, and erase its whole attempt root.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Activate one ready gateway and prove stop erases generated credentials."""
+
         gateway = _gateway_get(tmp_path)
         chown_call_list: list[tuple[Path, int, int]] = []
         monitor_release = asyncio.Event()
@@ -167,12 +211,20 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
             """Represent one child output stream that immediately closes."""
 
             def __aiter__(self) -> "EmptyOutput":
-                """Return this empty asynchronous iterator."""
+                """Return this empty asynchronous iterator.
+
+                Returns:
+                    The this empty asynchronous iterator.
+                """
 
                 return self
 
             async def __anext__(self) -> bytes:
-                """End the empty asynchronous iterator."""
+                """End the empty asynchronous iterator.
+
+                Returns:
+                    Resulting byte payload.
+                """
 
                 raise StopAsyncIteration
 
@@ -184,7 +236,15 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
             stdout = EmptyOutput()
 
         async def process_create(*args: object, **kwargs: object) -> ExitedProcess:
-            """Capture the curated Gluetun environment without exposing secret bytes."""
+            """Capture the curated Gluetun environment without exposing secret bytes.
+
+            Args:
+                *args: Additional positional arguments.
+                **kwargs: Provider keyword arguments.
+
+            Returns:
+                Resulting exited process.
+            """
 
             environment = kwargs.get("env")
             if environment is not None:
@@ -193,18 +253,36 @@ def test_gateway_activation_reaches_ready_and_stop_removes_generated_credentials
             return ExitedProcess()
 
         async def readiness_wait(timeout_seconds: int | None = None) -> None:
-            """Represent immediate provider or SOCKS readiness."""
+            """Represent immediate provider or SOCKS readiness.
+
+            Args:
+                timeout_seconds: Timeout in seconds.
+            """
 
         async def dnsmasq_start(connection_deadline: float) -> None:
-            """Represent an immediately available tunnel-bound DNS forwarder."""
+            """Represent an immediately available tunnel-bound DNS forwarder.
+
+            Args:
+                connection_deadline: Connection deadline.
+            """
 
         async def health_monitor(generation: int) -> None:
-            """Keep one synthetic monitor alive until stop cancels it."""
+            """Keep one synthetic monitor alive until stop cancels it.
+
+            Args:
+                generation: Generation.
+            """
 
             await monitor_release.wait()
 
         def path_chown(path: Path, user_id: int, group_id: int) -> None:
-            """Capture ownership intent without requiring elevated host permissions."""
+            """Capture ownership intent without requiring elevated host permissions.
+
+            Args:
+                path: Exact filesystem path.
+                user_id: Exact user identity.
+                group_id: Exact group identity.
+            """
 
             chown_call_list.append((Path(path), user_id, group_id))
 
@@ -261,13 +339,24 @@ def test_gateway_failure_redacts_credentials_and_erases_attempt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Keep secrets out of both raised diagnostics and persistent status."""
+    """Keep secrets out of both raised diagnostics and persistent status.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Inject one provider failure and prove diagnostics redact credentials."""
+
         gateway = _gateway_get(tmp_path)
 
         async def process_start(openvpn_attempt: object) -> None:
-            """Raise one provider failure containing both raw credentials."""
+            """Raise one provider failure containing both raw credentials.
+
+            Args:
+                openvpn_attempt: Openvpn attempt.
+            """
 
             raise RuntimeError("provider rejected vpn-user and vpn-password")
 
@@ -291,9 +380,16 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Bind upstream DNS to tun0 and redirect only the dedicated SOCKS identity."""
+    """Bind upstream DNS to tun0 and redirect only the dedicated SOCKS identity.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prove proxy DNS uses the tunnel forwarder and UID-scoped redirect."""
+
         gateway = _gateway_get(tmp_path)
         process_command_list: list[list[str]] = []
         iptables_command_list: list[list[str]] = []
@@ -302,12 +398,20 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
             """Represent one child output stream that immediately closes."""
 
             def __aiter__(self) -> "EmptyOutput":
-                """Return this empty asynchronous iterator."""
+                """Return this empty asynchronous iterator.
+
+                Returns:
+                    The this empty asynchronous iterator.
+                """
 
                 return self
 
             async def __anext__(self) -> bytes:
-                """End the empty asynchronous iterator."""
+                """End the empty asynchronous iterator.
+
+                Returns:
+                    Resulting byte payload.
+                """
 
                 raise StopAsyncIteration
 
@@ -319,7 +423,15 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
             stdout = EmptyOutput()
 
         async def process_create(*args: object, **kwargs: object) -> RunningProcess:
-            """Capture one process command."""
+            """Capture one process command.
+
+            Args:
+                *args: Additional positional arguments.
+                **kwargs: Provider keyword arguments.
+
+            Returns:
+                Resulting running process.
+            """
 
             process_command_list.append([str(argument) for argument in args])
             return RunningProcess()
@@ -331,7 +443,17 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
             check: bool,
             text: bool,
         ) -> subprocess.CompletedProcess[str]:
-            """Capture firewall inspection and mutation commands."""
+            """Capture firewall inspection and mutation commands.
+
+            Args:
+                command: Command.
+                capture_output: Capture output.
+                check: Whether a nonzero command exit raises an error.
+                text: Text.
+
+            Returns:
+                Completed text-mode subprocess result.
+            """
 
             assert capture_output
             assert not check
@@ -361,9 +483,15 @@ def test_gateway_proxy_dns_uses_tunnel_forwarder_and_uid_scoped_redirect(
 
 
 def test_gateway_dnsmasq_readiness_rejects_an_early_process_exit(tmp_path: Path) -> None:
-    """Surface a concrete target-DNS startup failure before opening SOCKS egress."""
+    """Surface a concrete target-DNS startup failure before opening SOCKS egress.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prove DNS readiness rejects a helper that exits during startup."""
+
         gateway = _gateway_get(tmp_path)
 
         class ExitedProcess:
@@ -383,9 +511,16 @@ def test_gateway_health_monitor_restarts_the_complete_user_plane(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Stop the surviving listener before replacing a failed DNS or SOCKS child."""
+    """Stop the surviving listener before replacing a failed DNS or SOCKS child.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Fail one user-plane helper and prove the complete plane restarts."""
+
         gateway = _gateway_get(tmp_path)
         event_list: list[str] = []
         user_plane_started = asyncio.Event()
@@ -401,17 +536,29 @@ def test_gateway_health_monitor_restarts_the_complete_user_plane(
             returncode = 1
 
         async def health_server_is_ready() -> bool:
-            """Keep the provider tunnel ready while one user-plane child fails."""
+            """Keep the provider tunnel ready while one user-plane child fails.
+
+            Returns:
+                True while the provider tunnel remains ready.
+            """
 
             return True
 
         async def user_plane_stop(process_stop_deadline: float) -> None:
-            """Capture complete user-plane shutdown."""
+            """Capture complete user-plane shutdown.
+
+            Args:
+                process_stop_deadline: Process stop deadline.
+            """
 
             event_list.append("stop")
 
         async def user_plane_start(connection_deadline: float) -> None:
-            """Capture replacement after the shutdown boundary."""
+            """Capture replacement after the shutdown boundary.
+
+            Args:
+                connection_deadline: Connection deadline.
+            """
 
             event_list.append("start")
             user_plane_started.set()
@@ -438,9 +585,16 @@ def test_gateway_resolves_remote_hostname_again_and_rotates_provider_addresses(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Use standard DNS for every provider attempt and rotate multiple current addresses."""
+    """Use standard DNS for every provider attempt and rotate multiple current addresses.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Rotate resolved provider addresses on the replacement attempt."""
+
         config_root_path = _config_root_create(tmp_path)
         config_root_path.joinpath("provider.ovpn").write_text(
             "client\nremote vpn.example.test 1194\nauth-user-pass\n",
@@ -468,7 +622,17 @@ def test_gateway_resolves_remote_hostname_again_and_rotates_provider_addresses(
             family: socket.AddressFamily,
             type: socket.SocketKind,
         ) -> list[tuple[socket.AddressFamily, socket.SocketKind, int, str, tuple[str, int]]]:
-            """Return two current provider addresses in stable resolver order."""
+            """Return two current provider addresses in stable resolver order.
+
+            Args:
+                hostname: Hostname.
+                port: TCP port.
+                family: Family.
+                type: Type.
+
+            Returns:
+                The two current provider addresses in stable resolver order.
+            """
 
             assert port is None
             assert family is socket.AF_UNSPEC
@@ -494,7 +658,11 @@ def test_gateway_resolves_remote_hostname_again_and_rotates_provider_addresses(
 
 
 def test_gateway_config_rejects_overlapping_source_and_runtime_roots(tmp_path: Path) -> None:
-    """Prevent generated credentials from being written under an immutable source root."""
+    """Prevent generated credentials from being written under an immutable source root.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     config_root_path = _config_root_create(tmp_path)
 
@@ -510,9 +678,16 @@ def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Signal every owned session before waiting and prove stubborn wrappers after SIGKILL."""
+    """Signal every owned session before waiting and prove stubborn wrappers after SIGKILL.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prove every process session receives parallel TERM and bounded KILL."""
+
         gateway = _gateway_get(tmp_path)
         signal_call_list: list[tuple[int, signal.Signals]] = []
 
@@ -520,12 +695,22 @@ def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
             """Represent one wrapper that exits only after its process session receives SIGKILL."""
 
             def __init__(self, pid: int) -> None:
+                """Initialize the stubborn process dependencies.
+
+                Args:
+                    pid: Operating-system process identity.
+                """
+
                 self.pid = pid
                 self.returncode: int | None = None
                 self._exit_event = asyncio.Event()
 
             async def wait(self) -> int:
-                """Wait until the synthetic kernel reaps this process."""
+                """Wait until the synthetic kernel reaps this process.
+
+                Returns:
+                    Synthetic process exit status after the reap event.
+                """
 
                 await self._exit_event.wait()
                 return self.returncode or 0
@@ -533,7 +718,12 @@ def test_gateway_process_sessions_receive_parallel_term_then_bounded_kill(
         process_by_pid_map = {pid: StubbornProcess(pid) for pid in [101, 102]}
 
         def process_signal(pid: int, signal_number: signal.Signals) -> None:
-            """Capture session-member ordering and reap a process after its kill fallback."""
+            """Capture session-member ordering and reap a process after its kill fallback.
+
+            Args:
+                pid: Operating-system process identity.
+                signal_number: POSIX signal number.
+            """
 
             signal_call_list.append((pid, signal_number))
             if signal_number is signal.SIGKILL:
@@ -563,9 +753,16 @@ def test_gateway_full_cleanup_stops_every_process_under_one_common_deadline(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Full cleanup must not give each process family a sequential grace period."""
+    """Full cleanup must not give each process family a sequential grace period.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Stop every gateway process under one shared cleanup deadline."""
+
         gateway = _gateway_get(tmp_path)
         process_list = [object(), object(), object()]
         gateway._dante_process = process_list[0]
@@ -577,6 +774,13 @@ def test_gateway_full_cleanup_stops_every_process_under_one_common_deadline(
             selected_process_list: list[object],
             process_stop_deadline: float,
         ) -> None:
+            """Record the exact process group and shared cleanup deadline.
+
+            Args:
+                selected_process_list: Ordered selected process values.
+                process_stop_deadline: Process stop deadline.
+            """
+
             observed_call_list.append((selected_process_list, process_stop_deadline))
 
         monkeypatch.setattr(gateway, "_process_list_stop", process_list_stop)
@@ -596,9 +800,16 @@ def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Do not create a second provider attempt when old ownership is not proven absent."""
+    """Do not create a second provider attempt when old ownership is not proven absent.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Prevent a replacement provider from starting before proven cleanup."""
+
         gateway = _gateway_get(tmp_path)
         provider_start_count = 0
 
@@ -606,12 +817,21 @@ def test_gateway_provider_restart_never_starts_after_unproved_cleanup(
             process_list: list[object],
             process_stop_deadline: float,
         ) -> None:
-            """Represent a supervisor failure before old provider cleanup completes."""
+            """Represent a supervisor failure before old provider cleanup completes.
+
+            Args:
+                process_list: Ordered process values.
+                process_stop_deadline: Process stop deadline.
+            """
 
             raise RuntimeError("synthetic cleanup proof failure")
 
         async def provider_attempt_start() -> float:
-            """Fail the test if restart opens another provider attempt."""
+            """Fail the test if restart opens another provider attempt.
+
+            Returns:
+                Resulting float.
+            """
 
             nonlocal provider_start_count
             provider_start_count += 1
@@ -632,23 +852,42 @@ def test_gateway_provider_restart_reaps_previous_attempt_output_tasks(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Do not retain one output-reader task per indefinite provider retry."""
+    """Do not retain one output-reader task per indefinite provider retry.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Reap output tasks from the provider attempt before replacement."""
+
         gateway = _gateway_get(tmp_path)
         output_task = asyncio.create_task(asyncio.Event().wait())
         gateway._output_task_list.append(output_task)
 
         async def all_processes_stop(_deadline: float) -> None:
-            """Represent one already-proven process-session cleanup."""
+            """Represent one already-proven process-session cleanup.
+
+            Args:
+                _deadline: Deadline.
+            """
 
         async def provider_attempt_start() -> float:
-            """Represent immediate replacement-process start."""
+            """Represent immediate replacement-process start.
+
+            Returns:
+                Resulting float.
+            """
 
             return asyncio.get_running_loop().time()
 
         async def readiness_wait(_deadline: float) -> None:
-            """Represent immediate replacement readiness."""
+            """Represent immediate replacement readiness.
+
+            Args:
+                _deadline: Deadline.
+            """
 
         monkeypatch.setattr(gateway, "_all_processes_stop", all_processes_stop)
         monkeypatch.setattr(gateway, "_provider_attempt_start", provider_attempt_start)
@@ -667,9 +906,16 @@ def test_gateway_monitor_publishes_fatal_cleanup_failure_for_pod_replacement(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Wake the daemon replacement boundary instead of retrying unsafe cleanup."""
+    """Wake the daemon replacement boundary instead of retrying unsafe cleanup.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Publish fatal cleanup failure so Kubernetes can replace the Pod."""
+
         gateway = _gateway_get(tmp_path)
 
         class ExitedProcess:
@@ -678,12 +924,20 @@ def test_gateway_monitor_publishes_fatal_cleanup_failure_for_pod_replacement(
             returncode = 1
 
         async def health_server_is_ready() -> bool:
-            """Report the provider unavailable."""
+            """Report the provider unavailable.
+
+            Returns:
+                False, reporting the provider unavailable.
+            """
 
             return False
 
         async def user_plane_stop(process_stop_deadline: float) -> None:
-            """Represent an already fail-closed user plane."""
+            """Represent an already fail-closed user plane.
+
+            Args:
+                process_stop_deadline: Process stop deadline.
+            """
 
         async def provider_attempt_restart() -> None:
             """Fail with the exact unproved-cleanup class."""
@@ -691,7 +945,11 @@ def test_gateway_monitor_publishes_fatal_cleanup_failure_for_pod_replacement(
             raise GatewaySupervisorFailure("owned process remains after SIGKILL")
 
         async def process_cleanup(process_stop_deadline: float) -> None:
-            """Preserve the original fatal cause while attempting final cleanup."""
+            """Preserve the original fatal cause while attempting final cleanup.
+
+            Args:
+                process_stop_deadline: Process stop deadline.
+            """
 
         gateway._gluetun_process = ExitedProcess()
         gateway._status_set(generation=12, state=GatewayState.READY)

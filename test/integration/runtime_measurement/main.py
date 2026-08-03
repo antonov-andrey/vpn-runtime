@@ -22,6 +22,12 @@ from vpn_runtime.timing import (
 
 
 def _args_parse() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns:
+        The command-line arguments.
+    """
+
     parser = argparse.ArgumentParser(description="Measure the production VPN runtime on one real target node.")
     parser.add_argument("--config-root-path", required=True, type=Path)
     parser.add_argument(
@@ -49,6 +55,15 @@ def _args_parse() -> argparse.Namespace:
 
 
 async def _run(argument_by_name_map: dict[str, object]) -> RuntimeMeasurementReport:
+    """Measure every required VPN lifecycle scenario and persist its report.
+
+    Args:
+        argument_by_name_map: Complete measurement configuration.
+
+    Returns:
+        Validated runtime measurement report.
+    """
+
     t_start = datetime.now(timezone.utc)
     image_identity = str(argument_by_name_map.pop("image_identity"))
     report_path = Path(argument_by_name_map.pop("report_path"))
@@ -101,6 +116,8 @@ async def _run(argument_by_name_map: dict[str, object]) -> RuntimeMeasurementRep
 
 
 def main() -> None:
+    """Run the command-line entrypoint."""
+
     argument_by_name_map = vars(_args_parse())
     argument_by_name_map["expected_nonce"] = argument_by_name_map.pop("expected_nonce_path").read_bytes()
     argument_by_name_map["https_url"] = argument_by_name_map.pop("https_url_path").read_text(encoding="utf-8").strip()

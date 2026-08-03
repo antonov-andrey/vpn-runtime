@@ -22,7 +22,11 @@ class WaitableProcess(Protocol):
     returncode: int | None
 
     async def wait(self) -> int:
-        """Wait for the direct process wrapper to exit."""
+        """Wait for the direct process wrapper to exit.
+
+        Returns:
+            Direct child-process exit code.
+        """
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,11 +41,21 @@ class ProcessSessionSupervisor:
     """Track and terminate complete Linux sessions, including orphaned descendants."""
 
     def __init__(self, *, proc_root_path: Path = Path("/proc")) -> None:
+        """Initialize the process session supervisor dependencies.
+
+        Args:
+            proc_root_path: Exact filesystem path for proc root.
+        """
+
         self._owned_session_by_process_id_map: dict[int, OwnedProcessSession] = {}
         self._proc_root_path = proc_root_path
 
     def register(self, process: WaitableProcess) -> None:
-        """Register a process started with ``start_new_session=True``."""
+        """Register a process started with ``start_new_session=True``.
+
+        Args:
+            process: Direct child wrapper whose Linux session becomes owned.
+        """
 
         process_id = id(process)
         if process_id in self._owned_session_by_process_id_map:
@@ -52,7 +66,14 @@ class ProcessSessionSupervisor:
         )
 
     def have_processes(self, process_list: list[WaitableProcess | None]) -> bool:
-        """Return whether a direct wrapper or any member of its owned session exists."""
+        """Return whether a direct wrapper or any member of its owned session exists.
+
+        Args:
+            process_list: Direct child wrappers whose complete sessions must be inspected.
+
+        Returns:
+            Whether a direct wrapper or any member of its owned session exists.
+        """
 
         for process in process_list:
             if process is None:
@@ -69,7 +90,12 @@ class ProcessSessionSupervisor:
         process_list: list[WaitableProcess | None],
         process_stop_deadline: float,
     ) -> None:
-        """Signal complete sessions and prove direct wrappers and descendants absent."""
+        """Signal complete sessions and prove direct wrappers and descendants absent.
+
+        Args:
+            process_list: Direct child wrappers whose complete sessions must stop.
+            process_stop_deadline: Shared monotonic graceful-stop deadline.
+        """
 
         owned_session_list = [self._owned_session_get(process) for process in process_list if process is not None]
         if not owned_session_list:
@@ -87,6 +113,13 @@ class ProcessSessionSupervisor:
         owned_session_list: list[OwnedProcessSession],
         process_stop_deadline: float,
     ) -> None:
+        """Send SIGTERM, then SIGKILL if needed, under one shared deadline.
+
+        Args:
+            owned_session_list: Complete Linux sessions owned by this supervisor.
+            process_stop_deadline: Shared monotonic graceful-stop deadline.
+        """
+
         self._signal_send(owned_session_list, signal.SIGTERM)
         if await self._absence_wait(owned_session_list, process_stop_deadline):
             return
@@ -100,6 +133,16 @@ class ProcessSessionSupervisor:
         owned_session_list: list[OwnedProcessSession],
         deadline: float,
     ) -> bool:
+        """Wait until direct wrappers and every member of their sessions are absent.
+
+        Args:
+            owned_session_list: Complete Linux sessions whose absence must be proven.
+            deadline: Exact monotonic proof deadline.
+
+        Returns:
+            Whether every owned wrapper and session member is absent.
+        """
+
         wait_task_list = [
             asyncio.create_task(owned_session.process.wait())
             for owned_session in owned_session_list
@@ -126,6 +169,15 @@ class ProcessSessionSupervisor:
             await asyncio.gather(*wait_task_list, return_exceptions=True)
 
     def _owned_session_get(self, process: WaitableProcess) -> OwnedProcessSession:
+        """Return registered ownership or derive the direct wrapper's session identity.
+
+        Args:
+            process: Direct child wrapper.
+
+        Returns:
+            Immutable wrapper-to-session ownership binding.
+        """
+
         return self._owned_session_by_process_id_map.get(
             id(process),
             OwnedProcessSession(process=process, session_id=process.pid),
@@ -136,6 +188,13 @@ class ProcessSessionSupervisor:
         owned_session_list: list[OwnedProcessSession],
         signal_number: signal.Signals,
     ) -> None:
+        """Send one signal to every live PID in the selected owned sessions.
+
+        Args:
+            owned_session_list: Complete Linux sessions selected for signaling.
+            signal_number: POSIX signal number.
+        """
+
         target_pid_set: set[int] = set()
         for owned_session in owned_session_list:
             target_pid_set.update(self._session_member_pid_list_get(owned_session.session_id))
@@ -151,6 +210,15 @@ class ProcessSessionSupervisor:
                 raise ProcessSessionError("owned process session could not be signalled") from exc
 
     def _session_member_pid_list_get(self, session_id: int) -> list[int]:
+        """Enumerate live non-zombie PIDs owned by one Linux session.
+
+        Args:
+            session_id: Exact session identity.
+
+        Returns:
+            Live member PIDs discovered from procfs.
+        """
+
         try:
             process_path_list = list(self._proc_root_path.iterdir())
         except OSError as exc:

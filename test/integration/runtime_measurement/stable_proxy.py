@@ -11,9 +11,23 @@ from runtime_measurement.model import MeasurementSample
 
 
 async def stable_proxy_switch_restart_get(*, runtime_root_path: Path) -> MeasurementSample:
-    """Prove disabled start, atomic upstream switch, and disabled restart."""
+    """Prove disabled start, atomic upstream switch, and disabled restart.
+
+    Args:
+        runtime_root_path: Exact filesystem path for runtime root.
+
+    Returns:
+        Resulting measurement sample.
+    """
 
     async def echo(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        """Echo one payload through the disposable upstream server.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
+
         payload = await reader.read(1024)
         if payload:
             writer.write(payload)
@@ -85,6 +99,12 @@ async def stable_proxy_switch_restart_get(*, runtime_root_path: Path) -> Measure
 
 
 async def _fail_closed_prove(*, port: int) -> None:
+    """Prove the disabled stable proxy refuses one upstream round trip.
+
+    Args:
+        port: TCP port.
+    """
+
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     try:
         writer.write(b"blocked")
@@ -100,12 +120,25 @@ async def _fail_closed_prove(*, port: int) -> None:
 
 
 def _free_port_get() -> int:
+    """Ask the kernel for one currently unbound loopback TCP port.
+
+    Returns:
+        Selected ephemeral TCP port.
+    """
+
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
         return listener.getsockname()[1]
 
 
 async def _round_trip_prove(*, port: int, payload: bytes) -> None:
+    """Prove exact bytes traverse the selected stable-proxy endpoint.
+
+    Args:
+        port: TCP port.
+        payload: Structured operation payload.
+    """
+
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(payload)
     await writer.drain()

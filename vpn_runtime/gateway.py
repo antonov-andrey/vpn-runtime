@@ -74,7 +74,11 @@ class GatewaySupervisorFailure(RuntimeError):
 
 
 def _health_monitor_task_done(monitor_task: asyncio.Task[None]) -> None:
-    """Consume one completed monitor task exception after status persistence."""
+    """Consume one completed monitor task exception after status persistence.
+
+    Args:
+        monitor_task: Monitor task.
+    """
 
     if not monitor_task.cancelled():
         monitor_task.exception()
@@ -200,7 +204,11 @@ class GatewayRuntime:
 
     @property
     def status(self) -> GatewayStatus:
-        """Return the latest immutable redacted gateway status."""
+        """Return the latest immutable redacted gateway status.
+
+        Returns:
+            The latest immutable redacted gateway status.
+        """
 
         return self._status
 
@@ -268,7 +276,11 @@ class GatewayRuntime:
         self._health_monitor_task.add_done_callback(_health_monitor_task_done)
 
     async def fatal_failure_wait(self) -> str:
-        """Wait until this runtime can no longer safely supervise its owned processes."""
+        """Wait until this runtime can no longer safely supervise its owned processes.
+
+        Returns:
+            Resulting text value.
+        """
 
         await self._fatal_failure_event.wait()
         return self._fatal_failure_diagnostic
@@ -289,7 +301,11 @@ class GatewayRuntime:
         self._status_set(generation=generation, state=GatewayState.STOPPED)
 
     def have_owned_processes(self) -> bool:
-        """Return whether one provider or SOCKS child is still running."""
+        """Return whether one provider or SOCKS child is still running.
+
+        Returns:
+            Whether one provider or SOCKS child is still running.
+        """
 
         return self._process_session_supervisor.have_processes(
             [self._dante_process, self._dnsmasq_process, self._gluetun_process]
@@ -307,7 +323,14 @@ class GatewayRuntime:
         await self._process_output_task_list_stop()
 
     def _diagnostic_redact(self, diagnostic: str) -> str:
-        """Remove exact credentials and generated auth paths from one diagnostic."""
+        """Remove exact credentials and generated auth paths from one diagnostic.
+
+        Args:
+            diagnostic: Diagnostic.
+
+        Returns:
+            Resulting text value.
+        """
 
         redacted_diagnostic = diagnostic
         for secret_value in [
@@ -671,7 +694,11 @@ class GatewayRuntime:
         raise RuntimeError(f"Gluetun tunnel readiness timed out: {self._recent_diagnostic_get()}")
 
     async def _gluetun_start(self, openvpn_attempt: OpenvpnAttempt) -> None:
-        """Start pinned Gluetun with one curated custom-provider environment."""
+        """Start pinned Gluetun with one curated custom-provider environment.
+
+        Args:
+            openvpn_attempt: Openvpn attempt.
+        """
 
         environment_by_name_map = {
             "DNS_KEEP_NAMESERVER": "on",
@@ -723,7 +750,11 @@ class GatewayRuntime:
         )
 
     async def _health_monitor(self, generation: int) -> None:
-        """Suppress user egress during reconnect and refresh stale provider DNS."""
+        """Suppress user egress during reconnect and refresh stale provider DNS.
+
+        Args:
+            generation: Generation.
+        """
 
         loop = asyncio.get_running_loop()
         provider_unhealthy_start_time: float | None = None
@@ -807,7 +838,11 @@ class GatewayRuntime:
             )
 
     def _fatal_failure_set(self, failure: BaseException) -> None:
-        """Publish the first fatal supervisor failure without exposing secret material."""
+        """Publish the first fatal supervisor failure without exposing secret material.
+
+        Args:
+            failure: Failure.
+        """
 
         if self._fatal_failure_event.is_set():
             return
@@ -815,7 +850,11 @@ class GatewayRuntime:
         self._fatal_failure_event.set()
 
     async def _health_server_is_ready(self) -> bool:
-        """Return whether the loopback Gluetun health endpoint responds with HTTP 200."""
+        """Return whether the loopback Gluetun health endpoint responds with HTTP 200.
+
+        Returns:
+            Whether the loopback Gluetun health endpoint responds with HTTP 200.
+        """
 
         try:
             reader, writer = await asyncio.wait_for(
@@ -847,7 +886,11 @@ class GatewayRuntime:
             self._attempt_root_path = None
 
     async def _all_processes_stop(self, process_stop_deadline: float) -> None:
-        """Signal every owned process session before one common graceful deadline."""
+        """Signal every owned process session before one common graceful deadline.
+
+        Args:
+            process_stop_deadline: Process stop deadline.
+        """
 
         await self._process_list_stop(
             [self._dante_process, self._dnsmasq_process, self._gluetun_process],
@@ -864,7 +907,12 @@ class GatewayRuntime:
         process_name: str,
         process: asyncio.subprocess.Process,
     ) -> None:
-        """Forward redacted child diagnostics as structured line events."""
+        """Forward redacted child diagnostics as structured line events.
+
+        Args:
+            process_name: Process name.
+            process: Process.
+        """
 
         if process.stdout is None:
             return
@@ -910,7 +958,11 @@ class GatewayRuntime:
             await asyncio.gather(*output_task_list, return_exceptions=True)
 
     def _recent_diagnostic_get(self) -> str:
-        """Return a bounded redacted child-output tail for concrete failures."""
+        """Return a bounded redacted child-output tail for concrete failures.
+
+        Returns:
+            A bounded redacted child-output tail for concrete failures.
+        """
 
         return " | ".join(self._recent_diagnostic_list) or "no child diagnostic"
 
@@ -972,7 +1024,13 @@ class GatewayRuntime:
             self._status_callback(self._status)
 
     def _status_set(self, *, generation: int, state: GatewayState, diagnostic: str = "") -> None:
-        """Replace and publish one redacted lifecycle status."""
+        """Replace and publish one redacted lifecycle status.
+
+        Args:
+            generation: Generation.
+            state: Exact runtime state.
+            diagnostic: Diagnostic.
+        """
 
         self._status = GatewayStatus(
             diagnostic=self._diagnostic_redact(diagnostic),

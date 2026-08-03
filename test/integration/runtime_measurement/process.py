@@ -15,7 +15,16 @@ async def forced_process_stop_get(
     process_stop_timeout_seconds: int,
     runtime_root_path: Path,
 ) -> MeasurementSample:
-    """Prove SIGKILL fallback for one process session that ignores SIGTERM."""
+    """Prove SIGKILL fallback for one process session that ignores SIGTERM.
+
+    Args:
+        config_root_path: Exact filesystem path for config root.
+        process_stop_timeout_seconds: Process stop timeout in seconds.
+        runtime_root_path: Exact filesystem path for runtime root.
+
+    Returns:
+        Resulting measurement sample.
+    """
 
     runtime = gateway_get(
         config_root_path=config_root_path,

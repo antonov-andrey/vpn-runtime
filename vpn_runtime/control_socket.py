@@ -6,7 +6,12 @@ import stat
 
 
 async def stale_control_socket_remove(*, socket_path: Path, owner_name: str) -> None:
-    """Remove a dead prior socket without unlinking another live owner."""
+    """Remove a dead prior socket without unlinking another live owner.
+
+    Args:
+        socket_path: Exact filesystem path for socket.
+        owner_name: Owner name.
+    """
 
     try:
         socket_stat = socket_path.lstat()

@@ -14,11 +14,21 @@ class _ExitedProcess:
     """Represent an exited session leader whose descendant remains alive."""
 
     def __init__(self, pid: int) -> None:
+        """Initialize the exited process dependencies.
+
+        Args:
+            pid: Operating-system process identity.
+        """
+
         self.pid = pid
         self.returncode: int | None = -signal.SIGKILL
 
     async def wait(self) -> int:
-        """Return the already observed leader exit."""
+        """Return the already observed leader exit.
+
+        Returns:
+            The already observed leader exit.
+        """
 
         return self.returncode
 
@@ -30,7 +40,14 @@ def _proc_stat_write(
     session_id: int,
     state: str = "S",
 ) -> None:
-    """Write the minimum Linux stat shape consumed by the supervisor."""
+    """Write the minimum Linux stat shape consumed by the supervisor.
+
+    Args:
+        proc_root_path: Exact filesystem path for proc root.
+        pid: Operating-system process identity.
+        session_id: Exact session identity.
+        state: Exact runtime state.
+    """
 
     process_root_path = proc_root_path / str(pid)
     process_root_path.mkdir()
@@ -44,9 +61,16 @@ def test_process_session_stop_terminates_orphan_after_direct_leader_exit(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Do not mistake an exited Gluetun wrapper for an empty provider process tree."""
+    """Do not mistake an exited Gluetun wrapper for an empty provider process tree.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     async def run() -> None:
+        """Terminate an orphaned session member after its direct leader exits."""
+
         proc_root_path = tmp_path / "proc"
         proc_root_path.mkdir()
         leader_pid = 201
@@ -58,6 +82,13 @@ def test_process_session_stop_terminates_orphan_after_direct_leader_exit(
         signal_call_list: list[tuple[int, signal.Signals]] = []
 
         def process_signal(pid: int, signal_number: signal.Signals) -> None:
+            """Record the delivered signal and remove the emulated process.
+
+            Args:
+                pid: Operating-system process identity.
+                signal_number: POSIX signal number.
+            """
+
             signal_call_list.append((pid, signal_number))
             proc_root_path.joinpath(str(pid), "stat").unlink()
             proc_root_path.joinpath(str(pid)).rmdir()
@@ -74,7 +105,11 @@ def test_process_session_stop_terminates_orphan_after_direct_leader_exit(
 
 
 def test_process_session_ignores_resource_free_descendant_zombie(tmp_path: Path) -> None:
-    """Require wrapper reaping but do not wait on a descendant that has already exited."""
+    """Require wrapper reaping but do not wait on a descendant that has already exited.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     proc_root_path = tmp_path / "proc"
     proc_root_path.mkdir()
@@ -91,7 +126,12 @@ def test_process_session_ignores_process_that_disappears_while_stat_is_read(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Accept the normal procfs race after one enumerated process exits."""
+    """Accept the normal procfs race after one enumerated process exits.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     proc_root_path = tmp_path / "proc"
     proc_root_path.mkdir()
@@ -103,6 +143,17 @@ def test_process_session_ignores_process_that_disappears_while_stat_is_read(
     original_read_text = Path.read_text
 
     def stat_read(path: Path, *args: object, **kwargs: object) -> str:
+        """Inject disappearance while delegating every other procfs read.
+
+        Args:
+            path: Exact filesystem path.
+            *args: Additional positional arguments.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Original procfs text for every retained process.
+        """
+
         if path == disappearing_process_path / "stat":
             raise ProcessLookupError("process exited during procfs inspection")
         return original_read_text(path, *args, **kwargs)
@@ -116,7 +167,12 @@ def test_process_session_rejects_unreadable_process_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Keep inspection failures fail-closed when the process did not disappear."""
+    """Keep inspection failures fail-closed when the process did not disappear.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     proc_root_path = tmp_path / "proc"
     proc_root_path.mkdir()
@@ -128,6 +184,17 @@ def test_process_session_rejects_unreadable_process_metadata(
     original_read_text = Path.read_text
 
     def stat_read(path: Path, *args: object, **kwargs: object) -> str:
+        """Inject an unreadable process while delegating every other procfs read.
+
+        Args:
+            path: Exact filesystem path.
+            *args: Additional positional arguments.
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            Original procfs text for every other process.
+        """
+
         if path == unreadable_process_path / "stat":
             raise PermissionError("process metadata is unreadable")
         return original_read_text(path, *args, **kwargs)

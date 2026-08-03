@@ -26,7 +26,15 @@ from vpn_runtime.timing import (
 
 
 def _gateway_config_get(tmp_path: Path, **overrides: int) -> GatewayConfig:
-    """Build one configuration at the exact production validation boundary."""
+    """Build one configuration at the exact production validation boundary.
+
+    Args:
+        tmp_path: Temporary directory path.
+        **overrides: Additional keyword arguments.
+
+    Returns:
+        One configuration at the exact production validation boundary.
+    """
 
     return GatewayConfig(
         config_root_path=tmp_path / "config",
@@ -37,7 +45,11 @@ def _gateway_config_get(tmp_path: Path, **overrides: int) -> GatewayConfig:
 
 
 def test_timing_defaults_and_range_edges_are_accepted(tmp_path: Path) -> None:
-    """Materialize approved defaults and both edges of every safety range."""
+    """Materialize approved defaults and both edges of every safety range.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     default_config = _gateway_config_get(tmp_path)
     assert default_config.connection_attempt_timeout_seconds == CONNECTION_ATTEMPT_TIMEOUT_SECONDS_DEFAULT
@@ -76,7 +88,13 @@ def test_gateway_config_rejects_timing_outside_safety_range(
     tmp_path: Path,
     value: int,
 ) -> None:
-    """Reject resource-ownership deadlines outside the platform contract."""
+    """Reject resource-ownership deadlines outside the platform contract.
+
+    Args:
+        field_name: Field name.
+        tmp_path: Temporary directory path.
+        value: Candidate value.
+    """
 
     with pytest.raises(ValidationError):
         _gateway_config_get(tmp_path, **{field_name: value})
@@ -107,7 +125,13 @@ def test_cli_timing_parser_uses_same_range(
     minimum: int,
     maximum: int,
 ) -> None:
-    """Keep shell entrypoints on the same strict bounds as the runtime model."""
+    """Keep shell entrypoints on the same strict bounds as the runtime model.
+
+    Args:
+        parser: Parser.
+        minimum: Minimum.
+        maximum: Maximum.
+    """
 
     assert parser(str(minimum)) == minimum
     assert parser(str(maximum)) == maximum

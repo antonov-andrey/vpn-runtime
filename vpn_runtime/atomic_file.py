@@ -8,7 +8,13 @@ import secrets
 
 
 def atomic_bytes_write(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
-    """Replace one file after syncing its bytes and containing directory."""
+    """Replace one file after syncing its bytes and containing directory.
+
+    Args:
+        path: Exact filesystem path.
+        payload: Structured operation payload.
+        mode: Mode.
+    """
 
     temporary_path = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}.tmp")
     open_flag = os.O_CREAT | os.O_EXCL | os.O_WRONLY

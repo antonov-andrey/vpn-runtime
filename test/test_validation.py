@@ -27,7 +27,11 @@ class FakeValidationGateway:
     """Successful exact gateway lifecycle used by validation behavior tests."""
 
     def __init__(self, config: object) -> None:
-        """Store runtime config and start prepared."""
+        """Store runtime config and start prepared.
+
+        Args:
+            config: Validated runtime configuration.
+        """
 
         self.config = config
         self._have_owned_processes = False
@@ -39,12 +43,20 @@ class FakeValidationGateway:
         )
 
     async def activate(self, generation: int) -> None:
-        """Represent successful production gateway activation."""
+        """Represent successful production gateway activation.
+
+        Args:
+            generation: Generation.
+        """
 
         self._have_owned_processes = True
 
     def have_owned_processes(self) -> bool:
-        """Return synthetic child ownership state."""
+        """Return synthetic child ownership state.
+
+        Returns:
+            The synthetic child ownership state.
+        """
 
         return self._have_owned_processes
 
@@ -61,7 +73,12 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Require every platform-owned proof before returning a passed report."""
+    """Require every platform-owned proof before returning a passed report.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -69,7 +86,14 @@ def test_validation_passes_only_after_https_dns_fail_closed_and_cleanup_proofs(
     timeout_second_list: list[int] = []
 
     def socks_https_get(**kwargs: object) -> SocksHttpsResponse:
-        """Return exact nonce once, then fail after provider interruption."""
+        """Return exact nonce once, then fail after provider interruption.
+
+        Args:
+            **kwargs: Provider keyword arguments.
+
+        Returns:
+            The exact nonce once, then fail after provider interruption.
+        """
 
         nonlocal call_count
         call_count += 1
@@ -109,7 +133,13 @@ def test_validation_rejects_nonpositive_probe_timeout(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Reject an invalid platform probe deadline before gateway activation."""
+    """Reject an invalid platform probe deadline before gateway activation.
+
+    Args:
+        field_name: Field name.
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -135,7 +165,12 @@ def test_validation_classifies_static_rejection_as_deterministic_configuration_f
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Separate an unsafe snapshot from retryable provider infrastructure failure."""
+    """Separate an unsafe snapshot from retryable provider infrastructure failure.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -143,7 +178,11 @@ def test_validation_classifies_static_rejection_as_deterministic_configuration_f
         """Reject one snapshot during static prepared construction."""
 
         def __init__(self, config: object) -> None:
-            """Raise the deterministic parser result."""
+            """Raise the deterministic parser result.
+
+            Args:
+                config: Validated runtime configuration.
+            """
 
             raise ValueError("unsafe OpenVPN directive: plugin")
 
@@ -167,7 +206,11 @@ def test_validation_classifies_static_rejection_as_deterministic_configuration_f
 
 
 def test_validation_static_report_excludes_invalid_document_credentials(tmp_path: Path) -> None:
-    """Keep raw invalid document values out of the persisted validation diagnostic."""
+    """Keep raw invalid document values out of the persisted validation diagnostic.
+
+    Args:
+        tmp_path: Temporary directory path.
+    """
 
     config_root_path = tmp_path / "config"
     config_root_path.mkdir()
@@ -205,7 +248,12 @@ def test_validation_classifies_proven_provider_rejection_as_configuration_failur
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Do not retry forever when provider output proves the exact snapshot is invalid."""
+    """Do not retry forever when provider output proves the exact snapshot is invalid.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -213,7 +261,11 @@ def test_validation_classifies_proven_provider_rejection_as_configuration_failur
         """Fail exact activation with the runtime's deterministic error type."""
 
         async def activate(self, generation: int) -> None:
-            """Raise one already-redacted provider rejection."""
+            """Raise one already-redacted provider rejection.
+
+            Args:
+                generation: Generation.
+            """
 
             raise GatewayConfigurationError("AUTH_FAILED")
 
@@ -240,7 +292,12 @@ def test_validation_classifies_fail_closed_supervisor_failure_as_infrastructure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Retry a runtime supervisor failure instead of rejecting the immutable Version."""
+    """Retry a runtime supervisor failure instead of rejecting the immutable Version.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -279,7 +336,12 @@ def test_validation_cleanup_failure_overrides_deterministic_test_classification(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Treat an unproved cleanup as retryable even after a deterministic test failure."""
+    """Treat an unproved cleanup as retryable even after a deterministic test failure.
+
+    Args:
+        monkeypatch: Pytest mutation fixture.
+        tmp_path: Temporary directory path.
+    """
 
     from vpn_runtime import validation
 
@@ -294,7 +356,14 @@ def test_validation_cleanup_failure_overrides_deterministic_test_classification(
     call_count = 0
 
     def socks_https_get(**_kwargs: object) -> SocksHttpsResponse:
-        """Return the nonce and then incorrectly remain reachable."""
+        """Return the nonce and then incorrectly remain reachable.
+
+        Args:
+            **_kwargs: Additional keyword arguments.
+
+        Returns:
+            A nonce that incorrectly remains reachable after validation.
+        """
 
         nonlocal call_count
         call_count += 1

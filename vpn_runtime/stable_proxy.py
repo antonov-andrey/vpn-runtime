@@ -275,7 +275,12 @@ class StableProxyRuntime:
         atomic_bytes_write(self._status_path, (self.status.model_dump_json() + "\n").encode())
 
     async def _connection_handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Relay one accepted connection through the currently fenced upstream."""
+        """Relay one accepted connection through the currently fenced upstream.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         async with self._mutation_lock:
             upstream_host = self._upstream_host
@@ -311,7 +316,12 @@ class StableProxyRuntime:
             return
 
         async def relay(source: asyncio.StreamReader, destination: asyncio.StreamWriter) -> None:
-            """Copy bounded chunks until one side closes."""
+            """Copy bounded chunks until one side closes.
+
+            Args:
+                source: Source.
+                destination: Destination.
+            """
 
             while payload := await source.read(65536):
                 destination.write(payload)
@@ -337,7 +347,12 @@ class StableProxyRuntime:
             )
 
     async def _control_connection_handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Handle one bounded newline-delimited JSON control request."""
+        """Handle one bounded newline-delimited JSON control request.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         try:
             request_line = await asyncio.wait_for(reader.readline(), timeout=5)
@@ -353,7 +368,14 @@ class StableProxyRuntime:
         await writer.wait_closed()
 
     def _disable(self, *, generation: int) -> list[asyncio.StreamWriter]:
-        """Atomically clear upstream state and return every active relay writer."""
+        """Atomically clear upstream state and return every active relay writer.
+
+        Args:
+            generation: Generation.
+
+        Returns:
+            Requested values in deterministic order.
+        """
 
         self._mutation_epoch += 1
         self._generation = generation
@@ -363,7 +385,11 @@ class StableProxyRuntime:
         return self._active_writer_list_take()
 
     def _active_writer_list_take(self) -> list[asyncio.StreamWriter]:
-        """Detach and close every relay owned by the previous routing state."""
+        """Detach and close every relay owned by the previous routing state.
+
+        Returns:
+            Requested values in deterministic order.
+        """
 
         writer_list = [
             writer for writer_pair in self._connection_writer_pair_by_identity_map.values() for writer in writer_pair
@@ -379,7 +405,15 @@ class StableProxyRuntime:
         expected_mutation_epoch: int,
         request: StableProxyRequest,
     ) -> StableProxyResponse:
-        """Prove one exact upstream reachable before atomically publishing it."""
+        """Prove one exact upstream reachable before atomically publishing it.
+
+        Args:
+            expected_mutation_epoch: Expected mutation epoch.
+            request: Validated operation request.
+
+        Returns:
+            Resulting stable proxy response.
+        """
 
         try:
             _, proof_writer = await asyncio.wait_for(
@@ -455,7 +489,11 @@ async def stable_proxy_request_send(
 
 
 async def _writer_list_close(writer_list: list[asyncio.StreamWriter]) -> None:
-    """Bound cleanup waiting after traffic has already been disabled atomically."""
+    """Bound cleanup waiting after traffic has already been disabled atomically.
+
+    Args:
+        writer_list: Ordered writer values.
+    """
 
     if not writer_list:
         return
@@ -469,7 +507,11 @@ async def _writer_list_close(writer_list: list[asyncio.StreamWriter]) -> None:
 
 
 def _control_args_parse() -> argparse.Namespace:
-    """Parse one stable-proxy control request."""
+    """Parse one stable-proxy control request.
+
+    Returns:
+        One stable-proxy control request.
+    """
 
     parser = argparse.ArgumentParser(description="Control one exact stable fail-closed proxy runtime.")
     parser.add_argument("--expected-pod-uid", required=True)
@@ -484,7 +526,11 @@ def _control_args_parse() -> argparse.Namespace:
 
 
 def _daemon_args_parse() -> argparse.Namespace:
-    """Parse stable-proxy listener and identity paths."""
+    """Parse stable-proxy listener and identity paths.
+
+    Returns:
+        The stable-proxy listener and identity paths.
+    """
 
     parser = argparse.ArgumentParser(description="Run one credentialless stable fail-closed SOCKS relay.")
     parser.add_argument("--control-socket-path", required=True, type=Path)
@@ -496,7 +542,11 @@ def _daemon_args_parse() -> argparse.Namespace:
 
 
 def _readiness_args_parse() -> argparse.Namespace:
-    """Parse one private stable-proxy status-file path."""
+    """Parse one private stable-proxy status-file path.
+
+    Returns:
+        One private stable-proxy status-file path.
+    """
 
     parser = argparse.ArgumentParser(description="Read one stable-proxy runtime fence.")
     parser.add_argument("--status-path", required=True, type=Path)

@@ -81,7 +81,11 @@ class ControlDaemon:
 
     @property
     def status(self) -> GatewayStatus:
-        """Return runtime state projected onto the highest fenced generation."""
+        """Return runtime state projected onto the highest fenced generation.
+
+        Returns:
+            The runtime state projected onto the highest fenced generation.
+        """
 
         status_payload = self._runtime.status.model_dump(mode="python")
         status_payload["generation"] = self._highest_generation
@@ -104,7 +108,11 @@ class ControlDaemon:
         self._socket_owned = False
 
     async def fatal_failure_wait(self) -> str:
-        """Wait for a runtime failure that requires Kubernetes to replace this Pod."""
+        """Wait for a runtime failure that requires Kubernetes to replace this Pod.
+
+        Returns:
+            Resulting text value.
+        """
 
         return await self._runtime.fatal_failure_wait()
 
@@ -158,7 +166,14 @@ class ControlDaemon:
             raise
 
     async def _activate(self, generation: int) -> ControlResponse:
-        """Start or recover the exact latest generation without awaiting readiness."""
+        """Start or recover the exact latest generation without awaiting readiness.
+
+        Args:
+            generation: Generation.
+
+        Returns:
+            Resulting control response.
+        """
 
         if generation > self._highest_generation:
             await self._activation_cancel_and_stop()
@@ -195,13 +210,22 @@ class ControlDaemon:
         await self._runtime.stop()
 
     def _activation_task_done(self, activation_task: asyncio.Task[None]) -> None:
-        """Consume one task exception because status already carries the redacted failure."""
+        """Consume one task exception because status already carries the redacted failure.
+
+        Args:
+            activation_task: Activation task.
+        """
 
         if not activation_task.cancelled():
             activation_task.exception()
 
     async def _connection_handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        """Read exactly one bounded JSON request and write one JSON response."""
+        """Read exactly one bounded JSON request and write one JSON response.
+
+        Args:
+            reader: Asynchronous client stream reader.
+            writer: Asynchronous client stream writer.
+        """
 
         try:
             request_line = await asyncio.wait_for(reader.readline(), timeout=5)
@@ -217,21 +241,33 @@ class ControlDaemon:
         await writer.wait_closed()
 
     def _runtime_status_handle(self, runtime_status: GatewayStatus) -> None:
-        """Persist each redacted runtime transition under the current fence."""
+        """Persist each redacted runtime transition under the current fence.
+
+        Args:
+            runtime_status: Runtime status.
+        """
 
         status_payload = runtime_status.model_dump(mode="python")
         status_payload["generation"] = self._highest_generation
         self._state_write(GatewayStatus(**status_payload))
 
     def _state_write(self, status: GatewayStatus) -> None:
-        """Atomically replace the redacted durable status document."""
+        """Atomically replace the redacted durable status document.
+
+        Args:
+            status: Status.
+        """
 
         self._state_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self._state_path.parent, 0o700)
         atomic_bytes_write(self._state_path, (status.model_dump_json() + "\n").encode())
 
     def _stored_status_get(self) -> GatewayStatus | None:
-        """Load a previous redacted status only to preserve its generation fence."""
+        """Load a previous redacted status only to preserve its generation fence.
+
+        Returns:
+            A previous redacted status only to preserve its generation fence.
+        """
 
         if not self._state_path.is_file():
             return None
@@ -241,7 +277,14 @@ class ControlDaemon:
             raise ValueError(f"failed to load durable gateway status: {exc}") from exc
 
     async def _stop(self, generation: int) -> ControlResponse:
-        """Fence through the requested generation and idempotently stop provider work."""
+        """Fence through the requested generation and idempotently stop provider work.
+
+        Args:
+            generation: Generation.
+
+        Returns:
+            Resulting control response.
+        """
 
         if generation > self._highest_generation:
             self._highest_generation = generation
@@ -270,7 +313,11 @@ async def _control_request_send(socket_path: Path, request: ControlRequest) -> C
 
 
 def _control_args_parse() -> argparse.Namespace:
-    """Parse one shell-free local control command."""
+    """Parse one shell-free local control command.
+
+    Returns:
+        One shell-free local control command.
+    """
 
     parser = argparse.ArgumentParser(description="Control one exact fenced vpn-runtime gateway generation.")
     parser.add_argument("--socket-path", required=True, type=Path)
@@ -280,7 +327,11 @@ def _control_args_parse() -> argparse.Namespace:
 
 
 def _daemon_args_parse() -> argparse.Namespace:
-    """Parse prepared gateway daemon configuration."""
+    """Parse prepared gateway daemon configuration.
+
+    Returns:
+        The prepared gateway daemon configuration.
+    """
 
     parser = argparse.ArgumentParser(description="Run one prepared generation-fenced VPN gateway daemon.")
     parser.add_argument("--activate-generation", default=None, type=int)
@@ -308,7 +359,11 @@ def _daemon_args_parse() -> argparse.Namespace:
 
 
 def _readiness_args_parse() -> argparse.Namespace:
-    """Parse one local readiness state path."""
+    """Parse one local readiness state path.
+
+    Returns:
+        One local readiness state path.
+    """
 
     parser = argparse.ArgumentParser(description="Exit successfully only for a ready vpn-runtime gateway.")
     parser.add_argument("--state-path", required=True, type=Path)

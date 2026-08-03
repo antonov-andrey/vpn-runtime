@@ -327,7 +327,14 @@ async def validation_run(
 
 
 def _positive_timeout_seconds_parse(value: str) -> int:
-    """Parse one positive platform-owned validation timeout."""
+    """Parse one positive platform-owned validation timeout.
+
+    Args:
+        value: Candidate value.
+
+    Returns:
+        One positive platform-owned validation timeout.
+    """
 
     timeout_seconds = int(value)
     if timeout_seconds < 1:
@@ -336,7 +343,11 @@ def _positive_timeout_seconds_parse(value: str) -> int:
 
 
 def _args_parse() -> argparse.Namespace:
-    """Parse exact validation input and report paths."""
+    """Parse exact validation input and report paths.
+
+    Returns:
+        The exact validation input and report paths.
+    """
 
     parser = argparse.ArgumentParser(description="Validate one exact VPN snapshot with the production gateway image.")
     parser.add_argument("--config-root-path", required=True, type=Path)
