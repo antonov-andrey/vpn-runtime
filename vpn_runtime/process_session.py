@@ -26,7 +26,7 @@ class WaitableProcess(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
-class _OwnedProcessSession:
+class OwnedProcessSession:
     """Bind one direct wrapper to the Linux session created for its process tree."""
 
     process: WaitableProcess
@@ -37,7 +37,7 @@ class ProcessSessionSupervisor:
     """Track and terminate complete Linux sessions, including orphaned descendants."""
 
     def __init__(self, *, proc_root_path: Path = Path("/proc")) -> None:
-        self._owned_session_by_process_id_map: dict[int, _OwnedProcessSession] = {}
+        self._owned_session_by_process_id_map: dict[int, OwnedProcessSession] = {}
         self._proc_root_path = proc_root_path
 
     def register(self, process: WaitableProcess) -> None:
@@ -46,7 +46,7 @@ class ProcessSessionSupervisor:
         process_id = id(process)
         if process_id in self._owned_session_by_process_id_map:
             raise ProcessSessionError("process session is already registered")
-        self._owned_session_by_process_id_map[process_id] = _OwnedProcessSession(
+        self._owned_session_by_process_id_map[process_id] = OwnedProcessSession(
             process=process,
             session_id=process.pid,
         )
@@ -84,7 +84,7 @@ class ProcessSessionSupervisor:
     async def _signal_and_wait(
         self,
         *,
-        owned_session_list: list[_OwnedProcessSession],
+        owned_session_list: list[OwnedProcessSession],
         process_stop_deadline: float,
     ) -> None:
         self._signal_send(owned_session_list, signal.SIGTERM)
@@ -97,7 +97,7 @@ class ProcessSessionSupervisor:
 
     async def _absence_wait(
         self,
-        owned_session_list: list[_OwnedProcessSession],
+        owned_session_list: list[OwnedProcessSession],
         deadline: float,
     ) -> bool:
         wait_task_list = [
@@ -125,15 +125,15 @@ class ProcessSessionSupervisor:
                     wait_task.cancel()
             await asyncio.gather(*wait_task_list, return_exceptions=True)
 
-    def _owned_session_get(self, process: WaitableProcess) -> _OwnedProcessSession:
+    def _owned_session_get(self, process: WaitableProcess) -> OwnedProcessSession:
         return self._owned_session_by_process_id_map.get(
             id(process),
-            _OwnedProcessSession(process=process, session_id=process.pid),
+            OwnedProcessSession(process=process, session_id=process.pid),
         )
 
     def _signal_send(
         self,
-        owned_session_list: list[_OwnedProcessSession],
+        owned_session_list: list[OwnedProcessSession],
         signal_number: signal.Signals,
     ) -> None:
         target_pid_set: set[int] = set()
