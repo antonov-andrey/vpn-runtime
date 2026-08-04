@@ -1,8 +1,6 @@
 .pytest_cache/
 .venv/
-.spec/
 __pycache__/
 *.egg-info/
 *.pyc
-/.spec
 /.worktree/
